@@ -247,7 +247,7 @@ function warName(B) {
 
 // ---------- world state ----------
 let seed, worldName, gw, gh, F, thr, hexes, land, landCount, rivers, owner, distArr;
-let COLS, ROWS, X0, Y0, gOff, gHex, gW, liveFields, liveBorders, snapFields, snapBorders;
+let innerSea, archetype, features, lanes, seaBoxes = [], COLS, ROWS, X0, Y0, gOff, gHex, gW, liveFields, liveBorders, snapFields, snapBorders;
 let factions, wars, chron, eras, ruins, notes, tick, collapse, lastWarYear;
 let paperC, inkC, washC, washTmp, landBig, snapWashC, labels, snapLabels;
 let labelBoxes = [], dirty = true, ovDirty = true, follow = null, viewEra = null, ovC;
@@ -264,13 +264,26 @@ function decoPenalty(x, y) {
 function genWorld(s) {
   seed = s; rs = s | 0; R = rngNext;
   usedNames = new Set(); usedWars = new Map();
-  const nE = makeNoise(R), nE2 = makeNoise(R), nM = makeNoise(R);
+  const nE = makeNoise(R), nE2 = makeNoise(R), nM = makeNoise(R), nR = makeNoise(R);
+  // each world takes one of a few shapes, so they don't all look alike
+  archetype = pick(['continent', 'continent', 'twin', 'inland', 'archipelago']);
+  const ox = rnd(-.1, .1), oy = rnd(-.08, .08), wig = rnd(0, 6.3);
+  innerSea = { x: (.5 + ox) * MW, y: (.5 + oy) * MH };
   const elev = (x, y) => {
-    const e = fbm(nE, x / 330, y / 330, 5) * .8 + fbm(nE2, x / 105, y / 105, 3) * .2;
+    const u = x / MW, v = y / MH;
+    const e = archetype === 'archipelago'
+      ? fbm(nE, x / 190, y / 190, 5) * .7 + fbm(nE2, x / 80, y / 80, 3) * .3
+      : fbm(nE, x / 330, y / 330, 5) * .8 + fbm(nE2, x / 105, y / 105, 3) * .2;
     const ex = Math.min(x - MARGIN, MW - MARGIN - x) / (MW * .2), ey = Math.min(y - MARGIN, MH - MARGIN - y) / (MH * .22);
     const edge = smooth(clamp(Math.min(ex, ey), 0, 1));
-    return e - (1 - edge) * .35 - decoPenalty(x, y);
+    let sh = -(1 - edge) * (archetype === 'archipelago' ? .22 : .35);
+    if (archetype === 'twin') sh -= .3 * Math.exp(-(((u - .5 - ox * .5 - .06 * Math.sin(v * 5 + wig)) / .045) ** 2));    // a winding strait
+    if (archetype === 'inland') sh -= .32 * Math.exp(-(((u - .5 - ox) / .16) ** 2 + ((v - .5 - oy) / .13) ** 2));        // a sea at the heart
+    // nothing may cross the frame: the last 40 units inside it are always sea
+    sh -= .6 * (1 - smooth(clamp(Math.min(x - MARGIN, MW - MARGIN - x, y - MARGIN, MH - MARGIN - y) / 40, 0, 1)));
+    return e + sh - decoPenalty(x, y);
   };
+  const ridge = (x, y) => 1 - Math.abs(2 * fbm(nR, x / 170, y / 170, 4) - 1);
   gw = Math.ceil(MW / GS) + 1; gh = Math.ceil(MH / GS) + 1;
   F = new Float32Array(gw * gh);
   const inside = [];
@@ -280,7 +293,7 @@ function genWorld(s) {
     if (x > MARGIN && x < MW - MARGIN && y > MARGIN && y < MH - MARGIN) inside.push(v);
   }
   inside.sort((a, b) => a - b);
-  thr = inside[Math.floor(inside.length * .54)];
+  thr = inside[Math.floor(inside.length * (1 - ({ archipelago: .37, inland: .5 }[archetype] || .46)))];
 
   // hex grid (pointy-top, odd rows shifted right)
   const cols = Math.floor((MW - 2 * MARGIN - SQ3 * HR / 2) / (SQ3 * HR));
@@ -290,28 +303,24 @@ function genWorld(s) {
   hexes = [];
   for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
     const x = x0 + SQ3 * HR * (c + .5 * (r & 1)), y = y0 + 1.5 * HR * r;
-    hexes.push({ i: hexes.length, c, r, x, y, e: elev(x, y), m: fbm(nM, x / 210, y / 210, 4), nb: [], ed: [], river: false, lastCap: -999 });
+    hexes.push({ i: hexes.length, c, r, x, y, e: elev(x, y), m: fbm(nM, x / 210, y / 210, 4), rg: ridge(x, y), nb: [], river: false, lastCap: -999 });
   }
   const at = (c, r) => (c < 0 || r < 0 || c >= cols || r >= rows) ? null : hexes[r * cols + c];
   const DIR = [[[1,0],[0,-1],[-1,-1],[-1,0],[-1,1],[0,1]], [[1,0],[1,-1],[0,-1],[-1,0],[0,1],[1,1]]];
   for (const h of hexes) {
     h.land = h.e > thr;
-    const corners = [];
-    for (let k = 0; k < 6; k++) { const a = Math.PI / 180 * (60 * k - 90); corners.push([h.x + HR * Math.cos(a), h.y + HR * Math.sin(a)]); }
-    for (const [dc, dr] of DIR[h.r & 1]) {
-      const n = at(h.c + dc, h.r + dr); if (!n) continue;
-      const cs = corners.map(p => [Math.hypot(p[0] - n.x, p[1] - n.y), p]).sort((a, b) => a[0] - b[0]);
-      h.nb.push(n.i); h.ed.push([cs[0][1][0], cs[0][1][1], cs[1][1][0], cs[1][1][1]]);
-    }
+    for (const [dc, dr] of DIR[h.r & 1]) { const n = at(h.c + dc, h.r + dr); if (n) h.nb.push(n.i); }
   }
   land = hexes.filter(h => h.land);
   landCount = land.length;
   const emax = Math.max(...land.map(h => h.e));
   const ms = land.map(h => h.m).sort((a, b) => a - b);
   const dryQ = ms[Math.floor(ms.length * .15)], wetQ = ms[Math.floor(ms.length * .62)];
+  // mountains follow ridgelines through the high ground, so they form ranges rather than blobs
+  for (const h of land) h.ms = h.rg * .65 + (h.e - thr) / (emax - thr) * .35;
+  const mq = land.map(h => h.ms).sort((a, b) => b - a), mtnQ = mq[Math.floor(mq.length * .11)], hillQ = mq[Math.floor(mq.length * .25)];
   for (const h of land) {
-    const en = (h.e - thr) / (emax - thr);
-    h.terrain = en > .6 ? 'mountain' : en > .42 ? 'hills' : h.m < dryQ ? 'desert' : h.m > wetQ ? 'forest' : 'plains';
+    h.terrain = h.ms >= mtnQ ? 'mountain' : h.ms >= hillQ ? 'hills' : h.m < dryQ ? 'desert' : h.m > wetQ ? 'forest' : 'plains';
     h.coast = h.nb.some(n => !hexes[n].land);
   }
   // rivers: walk downhill from high ground to the sea
@@ -337,6 +346,79 @@ function genWorld(s) {
     h.def = { plains: 1, forest: 1.3, hills: 1.5, desert: 1.1, mountain: 2.3 }[h.terrain];
   }
   worldName = placeName();
+  nameGeography();
+  buildLanes();
+}
+
+// connected groups of hexes matching a test, using plain adjacency
+function components(test) {
+  const comp = new Int32Array(hexes.length).fill(-1), groups = [];
+  for (const h of hexes) {
+    if (comp[h.i] >= 0 || !test(h)) continue;
+    const g = [h]; comp[h.i] = groups.length;
+    for (let k = 0; k < g.length; k++) for (const n of g[k].nb) if (comp[n] < 0 && test(hexes[n])) { comp[n] = groups.length; g.push(hexes[n]); }
+    groups.push(g);
+  }
+  return { comp, groups };
+}
+function shapeOf(g) {
+  let sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
+  for (const h of g) { sx += h.x; sy += h.y; sxx += h.x * h.x; syy += h.y * h.y; sxy += h.x * h.y; }
+  const n = g.length, mx = sx / n, my = sy / n, cxx = sxx / n - mx * mx, cyy = syy / n - my * my, cxy = sxy / n - mx * my;
+  let best = g[0], bd = Infinity;
+  for (const h of g) { const d = (h.x - mx) ** 2 + (h.y - my) ** 2; if (d < bd) { bd = d; best = h; } }
+  return { x: (mx + best.x) / 2, y: (my + best.y) / 2, ang: n < 4 ? 0 : clamp(.5 * Math.atan2(2 * cxy, cxx - cyy), -.6, .6), n };
+}
+// seas, lakes, ranges, forests and wastes each get a name, as on any proper map
+function nameGeography() {
+  features = [];
+  const ADJ = ['Grey', 'Whispering', 'Sunless', 'Drowned', 'Silver', 'Cold', 'Amber', 'Shivering', 'Glass'];
+  const add = (kind, g, name, size) => features.push({ kind, name, size, ...shapeOf(g) });
+  for (const g of components(h => h.land && h.terrain === 'mountain').groups) if (g.length >= 4)
+    add('land', g, pick([`the ${placeName()} Mountains`, `the ${placeName()} Peaks`, `the Spine of ${placeName()}`, `the ${placeName()} Teeth`]), clamp(11 + Math.sqrt(g.length) * 1.2, 13, 19));
+  for (const g of components(h => h.land && h.terrain === 'forest').groups) if (g.length >= 7)
+    add('land', g, pick([`the ${placeName()} Wood`, `${placeName()} Forest`, `the Greenwood of ${placeName()}`]), clamp(11 + Math.sqrt(g.length), 13, 18));
+  for (const g of components(h => h.land && h.terrain === 'desert').groups) if (g.length >= 5)
+    add('land', g, pick([`the ${placeName()} Waste`, `the Sands of ${placeName()}`]), clamp(11 + Math.sqrt(g.length), 13, 18));
+  // inland waters: sea that never reaches the edge of the chart
+  const water = components(h => !h.land);
+  for (const g of water.groups) {
+    if (g.some(h => h.c === 0 || h.r === 0 || h.c === COLS - 1 || h.r === ROWS - 1) || g.length < 3) continue;
+    add('sea', g, g.length < 12 ? `Lake ${placeName()}` : pick([`the Inner Sea`, `the ${placeName()} Sea`, `the Sea of ${placeName()}`]), clamp(10 + Math.sqrt(g.length) * 1.2, 11, 20));
+  }
+  // open water: name the parts of the ocean furthest from any shore
+  const dist = new Int16Array(hexes.length).fill(-1), q = [];
+  for (const h of land) { dist[h.i] = 0; q.push(h.i); }
+  for (let k = 0; k < q.length; k++) for (const n of hexes[q[k]].nb) if (dist[n] < 0) { dist[n] = dist[q[k]] + 1; q.push(n); }
+  const open = hexes.filter(h => !h.land && dist[h.i] >= 2 && decoPenalty(h.x, h.y) < .01 && h.x > MARGIN + 90 && h.x < MW - MARGIN - 90 && h.y > MARGIN + 30 && h.y < MH - MARGIN - 30)
+    .sort((a, b) => dist[b.i] - dist[a.i] + (R() - .5));
+  const spots = [];
+  // a world built around an inland sea names it first
+  if (archetype === 'inland') {
+    const c = hexes.filter(h => !h.land).reduce((a, h) => Math.hypot(h.x - innerSea.x, h.y - innerSea.y) < Math.hypot(a.x - innerSea.x, a.y - innerSea.y) ? h : a);
+    if (Math.hypot(c.x - innerSea.x, c.y - innerSea.y) < 60) { spots.push(c); features.push({ kind: 'sea', name: pick([`the Inner Sea`, `the Sea of ${placeName()}`, `the ${placeName()} Sea`]), size: 19, x: c.x, y: c.y, ang: 0, n: 99 }); }
+  }
+  const inner = spots.length;
+  for (const h of open) if (spots.length < 3 + inner && spots.every(o => Math.hypot(o.x - h.x, o.y - h.y) > 380)) spots.push(h);
+  for (const h of spots.slice(inner)) features.push({ kind: 'sea', name: pick([`the ${placeName()} Sea`, `the Sea of ${placeName()}`, `the ${pick(ADJ)} Reach`, `the ${pick(ADJ)} Deep`]), size: 17, x: h.x, y: h.y, ang: 0, n: 99 });
+  features.openSea = open.filter(h => dist[h.i] >= 3);
+}
+// short crossings between separate landmasses, so islands are reachable by ship
+function buildLanes() {
+  lanes = [];
+  const { comp } = components(h => h.land), coast = land.filter(h => h.coast), cand = [];
+  for (let a = 0; a < coast.length; a++) for (let b = a + 1; b < coast.length; b++) {
+    const h = coast[a], g = coast[b]; if (comp[h.i] === comp[g.i]) continue;
+    const d = Math.hypot(h.x - g.x, h.y - g.y); if (d < 70) cand.push([d, h, g]);
+  }
+  cand.sort((p, q) => p[0] - q[0]);
+  const perPair = new Map();
+  for (const [, h, g] of cand) {
+    const key = Math.min(comp[h.i], comp[g.i]) + ':' + Math.max(comp[h.i], comp[g.i]), got = perPair.get(key) || [];
+    if (got.length >= 2 || got.some(([p, q]) => Math.hypot(p.x - h.x, p.y - h.y) < 120 || Math.hypot(q.x - g.x, q.y - g.y) < 120)) continue;
+    got.push([h, g]); perPair.set(key, got);
+    h.nb.push(g.i); g.nb.push(h.i); lanes.push([h, g]);
+  }
 }
 
 // ---------- marching squares ----------
@@ -580,9 +662,60 @@ function renderInk() {
     }
   }
   x.globalAlpha = 1;
+  drawSeaLife(x);
   drawFrame(x); drawCompass(x); drawCartouche(x);
 }
 
+function spacedLabel(x, text, px, py, ang, size, color, halo) {
+  x.save(); x.translate(px, py); x.rotate(ang);
+  x.font = `italic ${size}px "IM Fell English SC", Georgia, serif`; x.textAlign = 'center'; x.textBaseline = 'middle';
+  const t = text.split('').join('\u200a');
+  if (halo) { x.lineWidth = 3; x.strokeStyle = halo; x.strokeText(t, 0, 0); }
+  x.fillStyle = color; x.fillText(t, 0, 0);
+  const w = x.measureText(t).width; x.restore();
+  const ca = Math.abs(Math.cos(ang)), sa = Math.abs(Math.sin(ang)), hx = ca * w / 2 + sa * size * .6, hy = sa * w / 2 + ca * size * .6;
+  return { x0: px - hx, x1: px + hx, y0: py - hy, y1: py + hy };
+}
+function drawSeaLife(x) {
+  const sr = mulberry32(seed ^ 0x5ea);
+  x.save();
+  // sea lanes: dotted crossings between landmasses
+  x.strokeStyle = '#3d5560'; x.globalAlpha = .55; x.lineWidth = 1; x.setLineDash([.1, 4]); x.lineCap = 'round';
+  for (const [a, b] of lanes) {
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2, nx = -(b.y - a.y) * .18, ny = (b.x - a.x) * .18;
+    x.beginPath(); x.moveTo(a.x, a.y); x.quadraticCurveTo(mx + nx, my + ny, b.x, b.y); x.stroke();
+  }
+  x.setLineDash([]); x.globalAlpha = 1;
+  // names of seas and lakes
+  seaBoxes = [];
+  for (const f of features) if (f.kind === 'sea') seaBoxes.push(spacedLabel(x, f.name, f.x, f.y, f.ang, f.size, '#3d5560', 'rgba(222,214,190,.6)'));
+  // a few ships and, somewhere far out, a serpent
+  const free = features.openSea.filter(h => seaBoxes.every(b => h.x < b.x0 - 40 || h.x > b.x1 + 40 || h.y < b.y0 - 30 || h.y > b.y1 + 30));
+  const used = [];
+  const spot = () => { for (let k = 0; k < 60 && free.length; k++) { const h = free[Math.floor(sr() * free.length)]; if (used.every(u => Math.hypot(u.x - h.x, u.y - h.y) > 200)) { used.push(h); return h; } } return null; };
+  for (let k = 0; k < 3; k++) { const h = spot(); if (h) ship(x, h.x, h.y, sr() < .5 ? -1 : 1); }
+  const sp = spot(); if (sp) serpent(x, sp.x, sp.y);
+  x.restore();
+}
+function ship(x, px, py, dir) {
+  x.save(); x.translate(px, py); x.scale(dir, 1); x.strokeStyle = INK; x.lineWidth = .9; x.fillStyle = '#e8d9b2'; x.globalAlpha = .9;
+  x.beginPath(); x.moveTo(-11, 0); x.lineTo(11, 0); x.quadraticCurveTo(9, 5, 5, 6); x.lineTo(-7, 6); x.quadraticCurveTo(-11, 4, -11, 0); x.closePath(); x.fill(); x.stroke();
+  x.beginPath(); x.moveTo(0, 0); x.lineTo(0, -17); x.stroke();
+  x.beginPath(); x.moveTo(-1, -15); x.quadraticCurveTo(-8, -10, -1, -4); x.closePath(); x.fill(); x.stroke();
+  x.beginPath(); x.moveTo(1, -15); x.quadraticCurveTo(10, -9, 1, -3); x.closePath(); x.fill(); x.stroke();
+  x.beginPath(); x.moveTo(0, -17); x.lineTo(5, -18.5); x.lineTo(0, -20); x.stroke();
+  x.globalAlpha = .45; x.beginPath(); x.moveTo(-14, 8); x.quadraticCurveTo(-10, 6.5, -6, 8); x.moveTo(6, 8); x.quadraticCurveTo(10, 6.5, 14, 8); x.stroke();
+  x.restore();
+}
+function serpent(x, px, py) {
+  x.save(); x.translate(px, py); x.strokeStyle = INK; x.lineWidth = 1; x.fillStyle = '#5e7a72'; x.globalAlpha = .85;
+  for (const [cx, r] of [[-18, 6], [-4, 7], [10, 5.5]]) { x.beginPath(); x.arc(cx, 2, r, Math.PI, 0); x.fill(); x.stroke(); }
+  x.beginPath(); x.moveTo(17, 2); x.quadraticCurveTo(20, -12, 27, -10); x.quadraticCurveTo(31, -8, 27, -5); x.quadraticCurveTo(23, -4, 22, 2); x.fill(); x.stroke();
+  x.fillStyle = INK; x.beginPath(); x.arc(26, -8.5, .9, 0, 7); x.fill();
+  x.beginPath(); x.moveTo(-24, 2); x.quadraticCurveTo(-30, -2, -32, 3); x.stroke();
+  x.globalAlpha = .45; x.beginPath(); for (const cx of [-26, -11, 3, 18]) { x.moveTo(cx - 4, 4); x.quadraticCurveTo(cx, 2.5, cx + 4, 4); } x.stroke();
+  x.restore();
+}
 function drawFrame(x) {
   const o = 12, i2 = MARGIN - 6, mid = (o + i2) / 2;
   x.strokeStyle = INK; x.fillStyle = INK; x.globalAlpha = .9;
@@ -1143,13 +1276,13 @@ function newWorld(s) {
 // ---------- saving & resuming ----------
 // The world lives in this browser's storage. Terrain is rebuilt from the seed; everything
 // that happened since is saved, and time that passed while the page was closed is replayed.
-const SAVE_KEY = 'ledger-of-crowns-v1', PREV_KEY = 'ledger-of-crowns-v1-set-aside', MAX_CATCHUP_YEARS = 200;
+const SAVE_KEY = 'ledger-of-crowns-v2', PREV_KEY = 'ledger-of-crowns-v2-set-aside', MAX_CATCHUP_YEARS = 200;
 const b64 = a => { const u = new Uint8Array(a.buffer, a.byteOffset, a.byteLength); let str = ''; for (let i = 0; i < u.length; i += 0x8000) str += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(str); };
 const unb64 = str => { const bin = atob(str), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return new Int16Array(u.buffer); };
 function packWorld(maxSnaps) {
   const now = year();
   return {
-    v: 1, seed, rs, tick, savedAt: Date.now(), paused, speed, follow, worldName,
+    v: 2, seed, rs, tick, savedAt: Date.now(), paused, speed, follow, worldName,
     owner: b64(owner), caps: land.filter(h => tick - h.lastCap < 36).map(h => [h.i, h.lastCap]),
     factions: factions.map(f => {
       const { fronts, wildFront, allies, truce, log, rulers, ...rest } = f;
@@ -1171,7 +1304,7 @@ function saveWorld() {
   }
 }
 function loadSave() {
-  try { const raw = localStorage.getItem(SAVE_KEY); const sv = raw && JSON.parse(raw); return sv && sv.v === 1 ? sv : null; } catch (e) { return null; }
+  try { const raw = localStorage.getItem(SAVE_KEY); const sv = raw && JSON.parse(raw); return sv && sv.v === 2 ? sv : null; } catch (e) { return null; }
 }
 function restoreWorld(sv) {
   initWorld(sv.seed);
@@ -1287,6 +1420,7 @@ function drawOverlay(x, own, labs, live, fields, borders) {
   const boxes = [
     { x0: CART.x - 6, y0: CART.y - 6, x1: CART.x + CART.w + 6, y1: CART.y + CART.h + 6 },
     { x0: COMPASS.x - COMPASS.r - 6, y0: COMPASS.y - COMPASS.r - 22, x1: COMPASS.x + COMPASS.r + 6, y1: COMPASS.y + COMPASS.r + 6 },
+    ...seaBoxes,
   ];
   const hit = b => boxes.some(o => b.x0 < o.x1 && b.x1 > o.x0 && b.y0 < o.y1 && b.y1 > o.y0);
   const inFrame = b => b.x0 > MARGIN && b.x1 < MW - MARGIN && b.y0 > MARGIN && b.y1 < MH - MARGIN;
@@ -1308,6 +1442,16 @@ function drawOverlay(x, own, labs, live, fields, borders) {
       if (k === .72 && l.n >= 30) done = { c: l.cands[0], size, b: boxAt(l.cands[0], size, w) };   // a great realm is always named
     }
     if (done) { boxes.push(done.b); placed.push({ l, ...done }); }
+  }
+  // mountain ranges, forests and wastes, in lighter ink, wherever the realms leave room
+  for (const f of features) {
+    if (f.kind !== 'land') continue;
+    x.font = `italic ${f.size}px "IM Fell English SC", Georgia, serif`;
+    const w = x.measureText(f.name.split('').join('\u200a')).width + 6, ca = Math.abs(Math.cos(f.ang)), sa = Math.abs(Math.sin(f.ang));
+    const b = { x0: f.x - ca * w / 2 - sa * f.size * .6, x1: f.x + ca * w / 2 + sa * f.size * .6, y0: f.y + 8 - sa * w / 2 - ca * f.size * .6, y1: f.y + 8 + sa * w / 2 + ca * f.size * .6 };
+    if (hit(b) || !inFrame(b)) continue;
+    boxes.push(b);
+    spacedLabel(x, f.name, f.x, f.y + 8, f.ang, f.size, '#4a3826', 'rgba(236,222,186,.8)');
   }
   // capitals
   for (const l of labs) { const c = hexes[l.capital]; if (c && own[c.i] === l.id) castle(x, c.x, c.y, l.color); }
