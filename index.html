@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lineage</title>
+<style>
+  :root { --bg:#0e1116; --panel:#161b22; --fg:#e6edf3; --muted:#8b949e; --accent:#58a6ff; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.4 system-ui,sans-serif; display:flex; flex-direction:column; height:100vh; }
+  header { display:flex; gap:12px; align-items:center; padding:8px 16px; background:var(--panel); flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0 8px 0 0; }
+  button { background:#21262d; color:var(--fg); border:1px solid #30363d; border-radius:6px; padding:4px 10px; cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  main { flex:1; display:flex; min-height:0; }
+  canvas#world { flex:1; min-width:0; display:block; }
+  aside { width:240px; background:var(--panel); padding:12px; overflow:auto; }
+  aside h2 { font-size:12px; text-transform:uppercase; color:var(--muted); margin:12px 0 6px; }
+  .row { display:flex; align-items:center; gap:6px; margin:3px 0; font-variant-numeric:tabular-nums; }
+  .sw { width:10px; height:10px; border-radius:50%; flex:none; }
+  #log div { color:var(--muted); font-size:12px; margin:2px 0; }
+  @media (max-width:700px){ main{flex-direction:column} aside{width:auto;height:40vh} }
+</style>
+</head>
+<body>
+<header>
+  <h1>Lineage</h1>
+  <button id="pause">Pause</button>
+  <button id="speed">Speed 1×</button>
+  <button id="reset">New world</button>
+  <span style="color:var(--muted)">Click the world to drop food. Nobody needs you, though.</span>
+</header>
+<main>
+  <canvas id="world"></canvas>
+  <aside>
+    <h2>Time</h2><div id="time"></div>
+    <h2>Population</h2><canvas id="graph" width="216" height="80"></canvas>
+    <h2>Dynasties</h2><div id="board"></div>
+    <h2>Chronicle</h2><div id="log"></div>
+  </aside>
+</main>
+<script>
+// Every creature carries a genome. Nothing is scripted: behaviour emerges from
+// genes + selection. The "game" is watching which dynasty wins and why.
+const cv = document.getElementById('world'), ctx = cv.getContext('2d');
+const gcv = document.getElementById('graph'), gctx = gcv.getContext('2d');
+let W, H, creatures, food, tick, speed = 1, paused = false, history, founders, logLines, nextId;
+const rand = (a, b) => a + Math.random() * (b - a);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+function resize() { W = cv.width = cv.clientWidth; H = cv.height = cv.clientHeight; }
+addEventListener('resize', resize);
+
+function log(msg) {
+  logLines.unshift(`t${Math.floor(tick / 60)}: ${msg}`);
+  logLines.length = Math.min(logLines.length, 12);
+  document.getElementById('log').innerHTML = logLines.map(l => `<div>${l}</div>`).join('');
+}
+
+function makeCreature(genome, x, y, dynasty, gen) {
+  return { id: nextId++, x, y, vx: 0, vy: 0, g: genome, energy: 60, age: 0, dynasty, gen };
+}
+function mutate(g) {
+  const m = k => clamp(g[k] * rand(0.88, 1.12), 0.2, 3);
+  return { speed: m('speed'), size: m('size'), sense: m('sense'), aggro: clamp(g.aggro + rand(-0.08, 0.08), 0, 1) };
+}
+
+function reset() {
+  resize();
+  creatures = []; food = []; tick = 0; history = []; logLines = []; nextId = 0;
+  const names = ['Ember', 'Tide', 'Moss', 'Violet', 'Bone', 'Gold'];
+  const hues = [10, 200, 120, 280, 40, 55];
+  founders = names.map((n, i) => ({ name: n, hue: hues[i], best: 1, extinctAt: null, maxGen: 0 }));
+  founders.forEach((f, i) => {
+    const g = { speed: rand(0.6, 1.6), size: rand(0.6, 1.6), sense: rand(0.6, 1.6), aggro: rand(0, 1) };
+    for (let k = 0; k < 6; k++) creatures.push(makeCreature(mutate(g), rand(0, W), rand(0, H), i, 0));
+  });
+  for (let i = 0; i < 120; i++) food.push({ x: rand(0, W), y: rand(0, H) });
+  log('Six dynasties wake up.');
+}
+
+cv.addEventListener('click', e => {
+  const r = cv.getBoundingClientRect();
+  for (let i = 0; i < 25; i++) food.push({ x: e.clientX - r.left + rand(-30, 30), y: e.clientY - r.top + rand(-30, 30) });
+});
+
+function step() {
+  tick++;
+  // Food regrows; scarcity cycles slowly so the environment keeps shifting.
+  const season = 0.5 + 0.5 * Math.sin(tick / 1800);
+  if (Math.random() < 0.6 * season + 0.1 && food.length < 400) food.push({ x: rand(0, W), y: rand(0, H) });
+
+  for (const c of creatures) {
+    const r = 3 + c.g.size * 3, sense = 40 + c.g.sense * 50;
+    let tx = 0, ty = 0, best = Infinity, flee = false;
+    for (const f of food) {
+      const d = Math.hypot(f.x - c.x, f.y - c.y);
+      if (d < sense && d < best) { best = d; tx = f.x - c.x; ty = f.y - c.y; }
+    }
+    for (const o of creatures) {
+      if (o === c || o.dynasty === c.dynasty) continue;
+      const d = Math.hypot(o.x - c.x, o.y - c.y);
+      if (d > sense) continue;
+      if (o.g.size > c.g.size * 1.2 && o.g.aggro > 0.4) { tx = c.x - o.x; ty = c.y - o.y; flee = true; best = 0; }
+      else if (!flee && c.g.aggro > 0.5 && c.g.size > o.g.size * 1.2 && d < best * 1.5) { tx = o.x - c.x; ty = o.y - c.y; best = d; }
+    }
+    if (best === Infinity) { tx = Math.cos(c.id + tick / 90); ty = Math.sin(c.id * 1.7 + tick / 70); }
+    const len = Math.hypot(tx, ty) || 1, sp = c.g.speed * 1.4;
+    c.vx = c.vx * 0.85 + (tx / len) * sp * 0.15;
+    c.vy = c.vy * 0.85 + (ty / len) * sp * 0.15;
+    c.x = (c.x + c.vx + W) % W; c.y = (c.y + c.vy + H) % H;
+    // Metabolism: big, fast, perceptive bodies are expensive.
+    c.energy -= 0.04 + 0.02 * c.g.speed ** 2 * c.g.size + 0.01 * c.g.sense;
+    c.age++;
+    for (let i = food.length - 1; i >= 0; i--) {
+      if (Math.hypot(food[i].x - c.x, food[i].y - c.y) < r + 2) { food.splice(i, 1); c.energy += 18; }
+    }
+    for (const o of creatures) {
+      if (o.dead || o === c || o.dynasty === c.dynasty || c.g.aggro < 0.5) continue;
+      if (c.g.size > o.g.size * 1.2 && Math.hypot(o.x - c.x, o.y - c.y) < r) { o.dead = true; c.energy += o.energy * 0.6 + 10; }
+    }
+    if (c.energy <= 0 || c.age > 4000) c.dead = true;
+  }
+
+  const born = [];
+  for (const c of creatures) {
+    if (!c.dead && c.energy > 110) {
+      c.energy -= 55;
+      born.push(makeCreature(mutate(c.g), c.x + rand(-5, 5), c.y + rand(-5, 5), c.dynasty, c.gen + 1));
+    }
+  }
+  creatures = creatures.filter(c => !c.dead).concat(born);
+  if (creatures.length > 500) creatures.sort((a, b) => b.energy - a.energy).length = 500;
+
+  // Bookkeeping for the story.
+  const counts = founders.map(() => 0);
+  for (const c of creatures) { counts[c.dynasty]++; founders[c.dynasty].maxGen = Math.max(founders[c.dynasty].maxGen, c.gen); }
+  founders.forEach((f, i) => {
+    if (counts[i] > f.best * 1.5 && counts[i] >= 20) { f.best = counts[i]; log(`${f.name} swells to ${counts[i]}.`); }
+    if (counts[i] === 0 && f.extinctAt === null) { f.extinctAt = tick; log(`${f.name} is extinct.`); }
+  });
+  const alive = founders.filter(f => f.extinctAt === null);
+  if (alive.length === 1 && !founders.winnerLogged) { founders.winnerLogged = true; log(`${alive[0].name} inherits the world.`); }
+  if (creatures.length === 0) { log('Silence. A new world begins.'); setTimeout(reset, 1500); paused = true; setTimeout(() => paused = false, 1500); }
+  if (tick % 30 === 0) { history.push(counts); if (history.length > 216) history.shift(); }
+}
+
+function draw() {
+  ctx.fillStyle = '#0e1116'; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#3fb95066';
+  for (const f of food) ctx.fillRect(f.x - 1.5, f.y - 1.5, 3, 3);
+  for (const c of creatures) {
+    const f = founders[c.dynasty], r = 3 + c.g.size * 3;
+    ctx.beginPath(); ctx.arc(c.x, c.y, r, 0, 7);
+    ctx.fillStyle = `hsl(${f.hue} ${50 + c.g.aggro * 45}% ${45 + clamp(c.energy, 0, 110) / 6}%)`;
+    ctx.fill();
+  }
+  // Side panel
+  document.getElementById('time').textContent = `Day ${Math.floor(tick / 600)} · ${creatures.length} alive`;
+  const counts = founders.map(() => 0), avg = founders.map(() => ({ speed: 0, size: 0, aggro: 0 }));
+  for (const c of creatures) { counts[c.dynasty]++; for (const k in avg[c.dynasty]) avg[c.dynasty][k] += c.g[k]; }
+  const order = founders.map((f, i) => i).sort((a, b) => counts[b] - counts[a]);
+  document.getElementById('board').innerHTML = order.map(i => {
+    const f = founders[i], n = counts[i];
+    const traits = n ? ` <span style="color:var(--muted)">spd ${(avg[i].speed / n).toFixed(1)} size ${(avg[i].size / n).toFixed(1)} ${avg[i].aggro / n > 0.5 ? 'hunter' : 'grazer'}</span>` : ' <span style="color:var(--muted)">extinct</span>';
+    return `<div class="row"><span class="sw" style="background:hsl(${f.hue} 70% 55%)"></span><b>${f.name}</b> ${n} · g${f.maxGen}</div><div class="row" style="font-size:11px;margin-left:16px">${traits}</div>`;
+  }).join('');
+  gctx.clearRect(0, 0, gcv.width, gcv.height);
+  const max = Math.max(10, ...history.flat());
+  founders.forEach((f, i) => {
+    gctx.strokeStyle = `hsl(${f.hue} 70% 55%)`; gctx.beginPath();
+    history.forEach((h, x) => { const y = gcv.height - (h[i] / max) * gcv.height; x ? gctx.lineTo(x, y) : gctx.moveTo(x, y); });
+    gctx.stroke();
+  });
+}
+
+function loop() {
+  if (!paused) for (let i = 0; i < speed; i++) step();
+  draw();
+  requestAnimationFrame(loop);
+}
+document.getElementById('pause').onclick = e => { paused = !paused; e.target.textContent = paused ? 'Play' : 'Pause'; };
+document.getElementById('speed').onclick = e => { speed = speed >= 8 ? 1 : speed * 2; e.target.textContent = `Speed ${speed}×`; };
+document.getElementById('reset').onclick = reset;
+reset(); loop();
+</script>
+</body>
+</html>
