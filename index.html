@@ -39,6 +39,18 @@
     background: rgba(239,227,196,.95); border: 1px solid var(--ink); padding: 6px 14px;
     font-style: italic; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,.4); max-width: 90%; text-align: center;
   }
+  #away {
+    position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(460px, calc(100% - 32px));
+    max-height: calc(100% - 32px); overflow-y: auto; background: var(--paper); border: 1px solid var(--ink);
+    box-shadow: 0 6px 24px rgba(0,0,0,.55); padding: 16px 20px; z-index: 2;
+  }
+  #away h3 { font-family: "IM Fell English SC", Georgia, serif; font-weight: normal; font-size: 22px; margin: 0 0 6px; color: var(--blood); }
+  #away p { margin: 0 0 8px; }
+  #away ul { margin: 0 0 12px; padding-left: 18px; font-size: 14px; }
+  #away li { margin-bottom: 4px; }
+  #away .y { color: var(--muted); font-family: "IM Fell English SC", Georgia, serif; }
+  #away .era-li { color: var(--blood); font-style: italic; }
+  #away button { background: var(--ink); color: var(--paper); }
   #loading { position: absolute; inset: 0; display: grid; place-items: center; color: #e9dcb8; font-style: italic; }
   aside {
     background: var(--paper); border-left: 2px solid #120c08; overflow-y: auto; padding: 12px 16px 24px;
@@ -105,6 +117,7 @@
     <canvas id="map"></canvas>
     <div id="loading">The cartographer sharpens a quill…</div>
     <div id="banner" hidden></div>
+    <div id="away" hidden></div>
   </div>
   <aside>
     <div id="card" hidden></div>
@@ -133,7 +146,14 @@ const TPS = 3;                       // sim months per real second at 1×
 const CART = { x: MARGIN + 18, y: MH - MARGIN - 86, w: 330, h: 70 };
 const COMPASS = { x: MW - MARGIN - 82, y: MH - MARGIN - 82, r: 52 };
 
-let R = Math.random;
+let R = Math.random, rs = 0;
+// the simulation's generator keeps its state in rs so it can be saved and restored
+function rngNext() {
+  rs = rs + 0x6D2B79F5 | 0;
+  let t = Math.imul(rs ^ rs >>> 15, 1 | rs);
+  t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+  return ((t ^ t >>> 14) >>> 0) / 4294967296;
+}
 const rnd = (a, b) => b === undefined ? R() * (a ?? 1) : a + R() * (b - a);
 const pick = a => a[Math.floor(R() * a.length)];
 const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
@@ -204,7 +224,7 @@ function warName(B) {
 // ---------- world state ----------
 let seed, worldName, gw, gh, F, thr, hexes, land, landCount, rivers, owner, distArr;
 let COLS, ROWS, X0, Y0, gOff, gHex, gW, liveFields, liveBorders, snapFields, snapBorders;
-let factions, wars, chron, eras, ruins, tick, collapse, lastWarYear;
+let factions, wars, chron, eras, ruins, notes, tick, collapse, lastWarYear;
 let paperC, inkC, washC, washTmp, landBig, snapWashC, labels, snapLabels;
 let dirty = true, ovDirty = true, follow = null, viewEra = null, ovC;
 
@@ -218,7 +238,7 @@ function decoPenalty(x, y) {
 }
 
 function genWorld(s) {
-  seed = s; R = mulberry32(s);
+  seed = s; rs = s | 0; R = rngNext;
   usedNames = new Set(); usedWars = new Map();
   const nE = makeNoise(R), nE2 = makeNoise(R), nM = makeNoise(R);
   const elev = (x, y) => {
@@ -692,6 +712,14 @@ function newFaction(kind, capital, parent) {
 const T = () => landCount * .05;
 const sig = (f, k = 1) => f.size >= T() * k;
 const lvl = (major, cls = '') => major ? cls : 'minor';
+// a cartographer's note written beside the place where something momentous happened
+const NOTE_LIFE = 120;
+function note(h, text) {
+  if (!h) return;
+  notes = notes.filter(n => Math.hypot(n.x - h.x, n.y - h.y) > 70 && tick - n.t < NOTE_LIFE);
+  notes.push({ x: h.x, y: h.y, text, y0: year(), t: tick });
+  if (notes.length > 7) notes.shift();
+}
 function event(text, fs = [], cls = '') {
   text = text.charAt(0).toUpperCase() + text.slice(1);
   const e = { y: year(), text, cls };
@@ -806,6 +834,7 @@ function attack(X, Y, w, key) {
       if (t.i === Y.capital) {
         Y.lostCap = tick + 36; relocateCapital(Y);
         event(`${fn(X)} storms and sacks the capital of ${fn(Y)}. ${rulerName(Y.ruler)} flees.`, [X, Y], lvl(sig(Y), 'big'));
+        if (sig(Y)) note(t, `Here ${X.name} sacked the seat of ${Y.name}`);
       }
     }
   }
@@ -844,6 +873,7 @@ function revolt(f, seedTile, maxU, over) {
   for (const i of region) owner[i] = r.id;
   r.size = region.length; dirty = true;
   event(`The far provinces of ${fn(f)} rise in revolt. ${rulerName(r.ruler)} is acclaimed lord of ${fn(r)}.`, [f, r], lvl(sig(f, 1.5) && region.length >= 8));
+  if (sig(f, 1.5) && region.length >= 8) note(seedTile, `Here ${r.name} rose against ${f.name}`);
   declareWar(r, f, `the Revolt of ${r.name}`, true);
 }
 
@@ -885,6 +915,7 @@ function civilWar(f) {
   const name = `the War of the ${f.name} Succession`;
   event(`The succession in ${fn(f)} is disputed. ${rulerName(p.ruler)} seizes the western halls and proclaims ${fn(p)}: ${name} begins.`
     .replace('western', pick(['western', 'eastern', 'northern', 'southern', 'outer'])), [f, p], lvl(sig(f), 'big'));
+  if (sig(f)) note(hexes[seat], `Here a pretender raised ${p.name}`);
   declareWar(p, f, name, true);
 }
 
@@ -899,6 +930,7 @@ function diplomacy() {
         if (X.traits.loyal < .45 && X.power > Y.power * 1.6 && R() < .12 * X.traits.ambit) {
           const w = declareWar(X, Y, null, true);
           if (w) event(`Faithless ${fn(X)} breaks its oaths and falls upon its ally ${fn(Y)}: ${w.name} begins.`, [X, Y], lvl(sig(X, .5) && sig(Y, .5), 'big'));
+          if (w && sig(X, .5) && sig(Y, .5)) note(hexes[Y.capital], `${X.name} betrayed its ally here`);
           break;
         }
       }
@@ -937,7 +969,7 @@ function disasters() {
   if (!al.length) return;
   const bySize = () => { let s = al.reduce((a, f) => a + f.size ** 1.3, 0) * R(); for (const f of al) { s -= f.size ** 1.3; if (s <= 0) return f; } return al[0]; };
   if (R() < 1 / 45) {
-    const f = bySize(); if (f.plague <= 0) { f.plague = 12 * rnd(3, 6); event(`${pick(['The Grey Sickness', 'The Sweating Plague', 'A red pestilence', 'The Coughing Death'])} comes to ${fn(f)}. The dead are carted out by night.`, [f], 'big'); }
+    const f = bySize(); if (f.plague <= 0) { f.plague = 12 * rnd(3, 6); event(`${pick(['The Grey Sickness', 'The Sweating Plague', 'A red pestilence', 'The Coughing Death'])} comes to ${fn(f)}. The dead are carted out by night.`, [f], 'big'); note(hexes[f.capital], `Plague in ${f.name}`); }
   }
   for (const f of al) if (f.plague > 24) for (const [id] of f.fronts) {
     const g = factions[id]; if (g.alive && g.plague <= 0 && R() < .2) { g.plague = 12 * rnd(2, 4); event(`The pestilence crosses into ${fn(g)}.`, [g], lvl(sig(g, 1.5))); }
@@ -957,6 +989,7 @@ function spawnHorde() {
   for (const id of victims) { const v = factions[id]; if (v.alive && owner[v.capital] === h.id) relocateCapital(v); }
   dirty = true;
   event(`From beyond the edge of the map ride ${fn(h)} under ${rulerName(h.ruler)}. The steppe-bells are heard for the first time.`, [h], 'big');
+  note(t, `Here rode in the ${h.name} Horde`);
   for (const id of victims) declareWar(h, factions[id], null, true);
 }
 function absorptions() {
@@ -991,7 +1024,7 @@ function die(f) {
   for (const g of factions) g.allies.delete(f.id);
   f.allies.clear();
   const great = f.peak >= landCount * .15;
-  if (great) collapse = { name: f.name, until: tick + 60 };
+  if (great) { collapse = { name: f.name, until: tick + 60 }; note(c, `Here ended ${f.name}`); }
   event(great ? `The last banner of ${fn(f)} is lowered. What was once ${f.peak} provinces is now only a name in this ledger.`
               : `${fn(f)} is no more; its lands pass to others.`, [f], great ? 'big' : f.absorbedBy != null ? 'minor' : lvl(f.peak >= T()));
   if (follow === f.id) renderCard();
@@ -1006,6 +1039,7 @@ function eraCheck() {
   for (const f of al) if (!f.broken && f.peak >= landCount * .18 && f.size < f.peak * .45) {
     f.broken = true; collapse = { name: f.name, until: tick + 60 };
     event(`The power of ${fn(f)} is broken; its provinces drift away like leaves.`, [f], 'big');
+    note(hexes[f.capital], `The breaking of ${f.name}`);
   }
   let name = null, kind = null;
   const recent = (k, span = 80) => eras.some(e => e.kind === k && year() - e.start < span);
@@ -1038,15 +1072,22 @@ function simTick() {
 }
 
 // ---------- new world ----------
-function newWorld(s) {
+function initWorld(s) {
   genWorld(s);
   owner = new Int16Array(hexes.length).fill(-1);
   distArr = new Int16Array(hexes.length).fill(-1);
-  factions = []; wars = []; chron = []; eras = []; ruins = []; tick = 0; collapse = null; lastWarYear = 0;
+  factions = []; wars = []; chron = []; eras = []; ruins = []; notes = []; tick = 0; collapse = null; lastWarYear = 0;
   follow = null; viewEra = null; labels = []; snapLabels = [];
   document.getElementById('chron').innerHTML = '';
+  document.getElementById('banner').hidden = true;
   renderLandMask(); renderPaper(); renderInk(); buildGridWeights();
   ovC = mk(MW * OS, MH * OS); washC = mk(MW * OS, MH * OS); washTmp = mk(MW * OS, MH * OS); snapWashC = mk(MW * OS, MH * OS);
+}
+function setSeedUrl(s) {
+  try { const u = new URL(location.href); u.searchParams.set('seed', s); history.replaceState(null, '', u); } catch (e) {}
+}
+function newWorld(s) {
+  initWorld(s);
   // seven founding peoples, spread apart
   const starts = [];
   for (let k = 0; k < 400 && starts.length < 7; k++) {
@@ -1063,7 +1104,82 @@ function newWorld(s) {
   startEra('The Age of Founding', 'found');
   computeStats();
   dirty = true; renderCard(); renderTimeline(); resize();
-  const u = new URL(location.href); u.searchParams.set('seed', s); history.replaceState(null, '', u);
+  setSeedUrl(s);
+  saveWorld();
+}
+
+// ---------- saving & resuming ----------
+// The world lives in this browser's storage. Terrain is rebuilt from the seed; everything
+// that happened since is saved, and time that passed while the page was closed is replayed.
+const SAVE_KEY = 'ledger-of-crowns-v1', MAX_CATCHUP_YEARS = 200;
+const b64 = a => { const u = new Uint8Array(a.buffer, a.byteOffset, a.byteLength); let str = ''; for (let i = 0; i < u.length; i += 0x8000) str += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(str); };
+const unb64 = str => { const bin = atob(str), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return new Int16Array(u.buffer); };
+function packWorld(maxSnaps) {
+  const now = year();
+  return {
+    v: 1, seed, rs, tick, savedAt: Date.now(), paused, speed, follow,
+    owner: b64(owner), caps: land.filter(h => tick - h.lastCap < 36).map(h => [h.i, h.lastCap]),
+    factions: factions.map(f => {
+      const { fronts, wildFront, allies, truce, log, rulers, ...rest } = f;
+      // long-dead realms keep less of their history, so centuries of play still fit in storage
+      const age = f.alive ? 0 : now - f.fell, trim = a => age < 150 ? a : age < 400 ? a.slice(-3) : [];
+      return { ...rest, allies: [...allies], truce: [...truce], log: trim(log), rulers: trim(rulers) };
+    }),
+    wars: wars.map(({ mark, markT, ...w }) => w),
+    chron: chron.slice(-400), ruins, notes, collapse, lastWarYear,
+    eras: eras.map((e, k) => ({ name: e.name, kind: e.kind, start: e.start,
+      snap: e.snap && k >= eras.length - maxSnaps ? { owner: b64(e.snap.owner), info: [...e.snap.info] } : null })),
+    usedNames: [...usedNames], usedWars: [...usedWars],
+  };
+}
+function saveWorld() {
+  if (!factions || window.__noSave) return;
+  for (const maxSnaps of [40, 12, 3]) {
+    try { localStorage.setItem(SAVE_KEY, JSON.stringify(packWorld(maxSnaps))); return; } catch (e) { /* too big or unavailable: try leaner */ }
+  }
+}
+function loadSave() {
+  try { const raw = localStorage.getItem(SAVE_KEY); const sv = raw && JSON.parse(raw); return sv && sv.v === 1 ? sv : null; } catch (e) { return null; }
+}
+function restoreWorld(sv) {
+  initWorld(sv.seed);
+  rs = sv.rs; tick = sv.tick;
+  owner.set(unb64(sv.owner));
+  for (const [i, t] of sv.caps) hexes[i].lastCap = t;
+  factions = sv.factions.map(o => ({ ...o, allies: new Set(o.allies), truce: new Map(o.truce), fronts: new Map(), wildFront: [] }));
+  wars = sv.wars; chron = sv.chron; ruins = sv.ruins; notes = sv.notes || []; collapse = sv.collapse; lastWarYear = sv.lastWarYear;
+  eras = sv.eras.map(e => ({ ...e, snap: e.snap ? { owner: unb64(e.snap.owner), info: new Map(e.snap.info) } : null }));
+  usedNames = new Set(sv.usedNames); usedWars = new Map(sv.usedWars);
+  for (const e of chron.slice(-250)) pushChronDom(e);
+  speed = sv.speed || 1; document.getElementById('speed').value = String(speed);
+  paused = !!sv.paused; document.getElementById('pause').textContent = paused ? 'Resume' : 'Pause';
+  follow = sv.follow != null && factions[sv.follow] ? sv.follow : null;
+  computeStats();
+  dirty = true; renderCard(); renderTimeline(); resize();
+  setSeedUrl(sv.seed);
+}
+// replay the years that passed while nobody was watching, then say what happened
+function catchUp(ms) {
+  if (paused || ms < 20000) return;
+  const ticks = Math.min(Math.floor(ms / 1000 * TPS), MAX_CATCHUP_YEARS * 12);
+  const y0 = year(), c0 = chron.length, alive0 = new Set(aliveList().map(f => f.id)), f0 = factions.length;
+  for (let k = 0; k < ticks; k++) simTick();
+  dirty = true;
+  const yrs = year() - y0; if (yrs < 1) return;
+  const fresh = chron.slice(c0), fell = [...alive0].filter(id => !factions[id].alive).length;
+  const rose = factions.slice(f0).filter(f => f.alive).length;
+  const picks = fresh.filter(e => e.cls === 'era' || e.cls === 'big');
+  const lines = (picks.length >= 3 ? picks : fresh).slice(-7);
+  const capped = ms / 1000 * TPS > MAX_CATCHUP_YEARS * 12;
+  const el = document.getElementById('away');
+  el.innerHTML = `<h3>While you were away</h3>
+    <p>${yrs} year${yrs === 1 ? '' : 's'} passed in ${worldName}${capped ? ' (the scribes stopped counting at ' + MAX_CATCHUP_YEARS + ')' : ''}.
+    ${fell} realm${fell === 1 ? '' : 's'} fell and ${rose} new one${rose === 1 ? '' : 's'} endured.</p>
+    <ul>${lines.map(e => e.cls === 'era' ? `<li class="era-li">Year ${e.y}: ${e.text} began</li>` : `<li><span class="y">Y.${e.y}</span> ${e.text}</li>`).join('')}</ul>
+    <button id="awayok">Return to the map</button>`;
+  el.hidden = false;
+  document.getElementById('awayok').onclick = () => { el.hidden = true; };
+  saveWorld();
 }
 
 // ---------- drawing ----------
@@ -1127,6 +1243,26 @@ function drawOverlay(x, own, labs, live, fields, borders) {
   x.textBaseline = 'alphabetic';
 }
 // per-frame marks: fresh conquests and the swords on each front
+function drawNotes(x) {
+  x.save();
+  for (const n of notes) {
+    const age = tick - n.t; if (age >= NOTE_LIFE) continue;
+    x.globalAlpha = Math.min(1, (age + 1) / 4) * Math.min(1, (NOTE_LIFE - age) / 50);
+    const left = n.x > MW - 330, up = n.y > 140;
+    const tx = n.x + (left ? -16 : 16), ty = n.y + (up ? -22 : 26);
+    x.strokeStyle = '#5a2418'; x.lineWidth = 1.1;
+    x.beginPath(); x.moveTo(n.x, n.y); x.quadraticCurveTo(n.x + (left ? -4 : 4), ty, tx, ty); x.stroke();
+    x.beginPath(); for (let k = 0; k < 3; k++) { const a = k * Math.PI / 3; x.moveTo(n.x - 4 * Math.cos(a), n.y - 4 * Math.sin(a)); x.lineTo(n.x + 4 * Math.cos(a), n.y + 4 * Math.sin(a)); } x.stroke();
+    x.textAlign = left ? 'right' : 'left'; x.textBaseline = 'middle';
+    x.font = 'italic 18px "IM Fell English", Georgia, serif';
+    const t1 = n.text, t2 = `Year ${n.y0}`, ox2 = left ? -4 : 4;
+    x.lineWidth = 4.5; x.strokeStyle = 'rgba(236,222,186,.92)'; x.strokeText(t1, tx + ox2, ty);
+    x.fillStyle = '#5a2418'; x.fillText(t1, tx + ox2, ty);
+    x.font = 'italic 13px "IM Fell English", Georgia, serif';
+    x.strokeText(t2, tx + ox2, ty + 16); x.fillStyle = '#6e4e36'; x.fillText(t2, tx + ox2, ty + 16);
+  }
+  x.restore();
+}
 function drawLiveMarks(x) {
   const own = owner;
   {
@@ -1200,6 +1336,7 @@ function draw() {
     ovDirty = false;
   }
   ctx.drawImage(ovC, 0, 0, MW, MH);
+  if (!viewEra) drawNotes(ctx);
 }
 
 // ---------- side panel ----------
@@ -1255,7 +1392,8 @@ function renderTimeline() {
     d.className = 'seg' + (k === eras.length - 1 ? ' now' : '') + (viewEra === e ? ' on' : '');
     d.style.flex = `${Math.max(1, end - e.start)} 1 0`;
     d.textContent = e.name; d.title = `${e.name} — Year ${e.start}${k + 1 < eras.length ? '–' + end : ' to now'}`;
-    d.onclick = () => showEra(k === eras.length - 1 ? null : e);
+    d.onclick = () => showEra(k === eras.length - 1 || !e.snap ? null : e);
+    if (!e.snap && k < eras.length - 1) d.title += ' (map not kept)';
     el.appendChild(d);
   });
 }
@@ -1271,6 +1409,7 @@ function showEra(e) {
   renderTimeline();
 }
 document.getElementById('banner').onclick = () => showEra(null);
+document.getElementById('away').addEventListener('click', ev => { const a = ev.target.closest('a.fn'); if (a) { follow = +a.dataset.f; renderCard(); } });
 chronEl.addEventListener('click', ev => { const a = ev.target.closest('a.fn'); if (a) { follow = +a.dataset.f; renderCard(); } });
 document.getElementById('card').addEventListener('click', ev => { const a = ev.target.closest('a.fn'); if (a) { follow = +a.dataset.f; renderCard(); } });
 cv.addEventListener('click', ev => {
@@ -1284,9 +1423,17 @@ cv.addEventListener('click', ev => {
 
 // ---------- controls & loop ----------
 let needDraw = true, paused = false, speed = 1, last = performance.now(), acc = 0, lastWash = -1e9, lastUI = 0;
-document.getElementById('pause').onclick = e => { paused = !paused; e.target.textContent = paused ? 'Resume' : 'Pause'; };
-document.getElementById('speed').onchange = e => { speed = +e.target.value; };
-document.getElementById('newworld').onclick = () => newWorld((Math.random() * 2 ** 31) | 0);
+document.getElementById('pause').onclick = e => { paused = !paused; e.target.textContent = paused ? 'Resume' : 'Pause'; saveWorld(); };
+document.getElementById('speed').onchange = e => { speed = +e.target.value; saveWorld(); };
+document.getElementById('newworld').onclick = () => { document.getElementById('away').hidden = true; newWorld((Math.random() * 2 ** 31) | 0); };
+// save every few seconds and whenever the page is hidden; replay hidden time on return
+let hiddenAt = null;
+setInterval(saveWorld, 5000);
+addEventListener('pagehide', saveWorld);
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { hiddenAt = Date.now(); saveWorld(); }
+  else if (hiddenAt) { const ms = Date.now() - hiddenAt; hiddenAt = null; last = performance.now(); catchUp(ms); }
+});
 
 function frame(now) {
   const dt = Math.min(now - last, 250); last = now;
@@ -1315,6 +1462,7 @@ function frame(now) {
 
 // test hook: run the simulation headless for n years
 window.__sim = {
+  save: () => saveWorld(), pack: () => packWorld(40), catchUp: ms => catchUp(ms),
   years(n) { for (let k = 0; k < n * 12; k++) simTick(); dirty = true; return this.stats(); },
   stats() {
     const al = aliveList(), top = al.reduce((a, b) => (b.size > (a?.size ?? -1) ? b : a), null);
@@ -1326,7 +1474,13 @@ window.__sim = {
 (async () => {
   try { await Promise.race([Promise.all([document.fonts.load('20px "IM Fell English"'), document.fonts.load('20px "IM Fell English SC"')]), new Promise(r => setTimeout(r, 2500))]); } catch (e) {}
   const q = +new URL(location.href).searchParams.get('seed');
-  newWorld(q || (Math.random() * 2 ** 31) | 0);
+  const sv = loadSave();
+  let resumed = false;
+  if (sv && (!q || q === sv.seed)) {
+    try { restoreWorld(sv); resumed = true; } catch (e) { console.warn('Could not resume the saved world', e); }
+  }
+  if (resumed) catchUp(Date.now() - sv.savedAt);
+  else newWorld(q || (Math.random() * 2 ** 31) | 0);
   document.getElementById('loading').remove();
   requestAnimationFrame(frame);
 })();
