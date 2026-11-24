@@ -3,186 +3,1224 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Lineage</title>
+<title>Ledger of Crowns</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IM+Fell+English:ital@0;1&family=IM+Fell+English+SC&display=swap" rel="stylesheet">
 <style>
-  :root { --bg:#0e1116; --panel:#161b22; --fg:#e6edf3; --muted:#8b949e; --accent:#58a6ff; }
-  * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.4 system-ui,sans-serif; display:flex; flex-direction:column; height:100vh; }
-  header { display:flex; gap:12px; align-items:center; padding:8px 16px; background:var(--panel); flex-wrap:wrap; }
-  header h1 { font-size:16px; margin:0 8px 0 0; }
-  button { background:#21262d; color:var(--fg); border:1px solid #30363d; border-radius:6px; padding:4px 10px; cursor:pointer; }
-  button:hover { border-color:var(--accent); }
-  main { flex:1; display:flex; min-height:0; }
-  canvas#world { flex:1; min-width:0; display:block; }
-  aside { width:240px; background:var(--panel); padding:12px; overflow:auto; }
-  aside h2 { font-size:12px; text-transform:uppercase; color:var(--muted); margin:12px 0 6px; }
-  .row { display:flex; align-items:center; gap:6px; margin:3px 0; font-variant-numeric:tabular-nums; }
-  .sw { width:10px; height:10px; border-radius:50%; flex:none; }
-  #log div { color:var(--muted); font-size:12px; margin:2px 0; }
-  @media (max-width:700px){ main{flex-direction:column} aside{width:auto;height:40vh} }
+  :root {
+    --wood: #241a13; --bar: #1b130d; --paper: #efe3c4; --paper-2: #e6d6ae;
+    --ink: #3a2b1c; --muted: #7a6650; --blood: #8a2e22; --gold: #c9a45a;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--wood); color: var(--ink);
+    font: 15px/1.4 "IM Fell English", Georgia, serif;
+    display: grid; grid-template-rows: auto 1fr auto; grid-template-columns: minmax(0, 1fr); height: 100vh; overflow: hidden;
+  }
+  header {
+    display: flex; align-items: center; gap: 16px; padding: 8px 16px; flex-wrap: wrap;
+    background: var(--bar); color: #e9dcb8; border-bottom: 1px solid #000;
+  }
+  .brand { font-family: "IM Fell English SC", Georgia, serif; font-size: 20px; letter-spacing: .06em; }
+  #yr { color: var(--gold); font-style: italic; min-width: 9ch; }
+  .ctl { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+  button, select {
+    font: inherit; font-size: 14px; background: #2e2218; color: #e9dcb8;
+    border: 1px solid #5a4632; border-radius: 3px; padding: 3px 10px; cursor: pointer;
+  }
+  button:hover, select:hover { border-color: var(--gold); }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; min-height: 0; }
+  #mapwrap { position: relative; min-width: 0; min-height: 0; }
+  #map { position: absolute; inset: 0; width: 100%; height: 100%; cursor: pointer; display: block; }
+  #banner {
+    position: absolute; left: 50%; top: 12px; transform: translateX(-50%);
+    background: rgba(239,227,196,.95); border: 1px solid var(--ink); padding: 6px 14px;
+    font-style: italic; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,.4); max-width: 90%; text-align: center;
+  }
+  #loading { position: absolute; inset: 0; display: grid; place-items: center; color: #e9dcb8; font-style: italic; }
+  aside {
+    background: var(--paper); border-left: 2px solid #120c08; overflow-y: auto; padding: 12px 16px 24px;
+    background-image: radial-gradient(ellipse at 30% 0%, rgba(255,250,235,.6), transparent 60%);
+  }
+  aside h2 {
+    font-family: "IM Fell English SC", Georgia, serif; font-weight: normal; font-size: 18px;
+    margin: 14px 0 6px; border-bottom: 1px solid var(--ink); letter-spacing: .05em;
+  }
+  #card { border: 1px solid var(--ink); padding: 10px 12px; margin-bottom: 8px; background: rgba(255,250,235,.45); position: relative; }
+  #card h3 { margin: 0 0 4px; font-weight: normal; font-size: 19px; }
+  #card .x { position: absolute; right: 6px; top: 2px; background: none; border: none; color: var(--ink); font-size: 18px; padding: 0 4px; }
+  #card dl { margin: 6px 0; display: grid; grid-template-columns: auto 1fr; gap: 1px 10px; font-size: 14px; }
+  #card dt { color: var(--muted); font-style: italic; }
+  #card dd { margin: 0; }
+  #card ul { margin: 2px 0 6px; padding-left: 18px; font-size: 13.5px; }
+  .hint { color: var(--muted); font-style: italic; font-size: 13.5px; margin: 4px 0 8px; }
+  #chron .ev { margin: 0 0 6px; font-size: 14px; }
+  #chron .ev .y { color: var(--muted); font-family: "IM Fell English SC", Georgia, serif; margin-right: 4px; }
+  #chron .era {
+    text-align: center; font-family: "IM Fell English SC", Georgia, serif; font-size: 16px;
+    margin: 12px 0 8px; color: var(--blood);
+  }
+  #chron .era::before, #chron .era::after { content: " ❧ "; color: var(--ink); }
+  #chron .big { font-weight: bold; }
+  a.fn { text-decoration: none; cursor: pointer; border-bottom: 1px dotted currentColor; }
+  footer { background: var(--bar); padding: 6px 16px 10px; color: #e9dcb8; }
+  footer .lbl { font-size: 12px; font-style: italic; color: #b9a882; margin-bottom: 3px; }
+  #timeline { display: flex; height: 30px; border: 1px solid #5a4632; background: var(--paper); overflow: hidden; }
+  #timeline .seg {
+    border-right: 1px solid var(--ink); min-width: 3px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+    font-size: 12px; padding: 6px 4px 0; cursor: pointer; color: var(--ink);
+  }
+  #timeline .seg:nth-child(even) { background: var(--paper-2); }
+  #timeline .seg:hover, #timeline .seg.on { background: #d9c391; }
+  #timeline .seg.now { font-style: italic; }
+  @media (max-width: 820px) {
+    body { height: auto; min-height: 100vh; overflow: auto; }
+    main { grid-template-columns: minmax(0, 1fr); }
+    .brand { font-size: 17px; }
+    .ctl { flex-wrap: wrap; }
+    #mapwrap { height: 62vw; min-height: 260px; }
+    aside { border-left: none; border-top: 2px solid #120c08; max-height: 55vh; }
+    header { gap: 8px; }
+    .ctl { margin-left: 0; }
+  }
 </style>
 </head>
 <body>
 <header>
-  <h1>Lineage</h1>
-  <button id="pause">Pause</button>
-  <button id="speed">Speed 1×</button>
-  <button id="reset">New world</button>
-  <span style="color:var(--muted)">Click the world to drop food. Nobody needs you, though.</span>
+  <div class="brand">Ledger of Crowns</div>
+  <div id="yr">Year 1</div>
+  <div class="ctl">
+    <button id="pause">Pause</button>
+    <select id="speed" aria-label="Speed">
+      <option value="0.5">½×</option><option value="1" selected>1×</option><option value="2">2×</option>
+      <option value="4">4×</option><option value="8">8×</option><option value="16">16×</option>
+    </select>
+    <button id="newworld">New world</button>
+  </div>
 </header>
 <main>
-  <canvas id="world"></canvas>
+  <div id="mapwrap">
+    <canvas id="map"></canvas>
+    <div id="loading">The cartographer sharpens a quill…</div>
+    <div id="banner" hidden></div>
+  </div>
   <aside>
-    <h2>Time</h2><div id="time"></div>
-    <h2>Population</h2><canvas id="graph" width="216" height="80"></canvas>
-    <h2>Dynasties</h2><div id="board"></div>
-    <h2>Chronicle</h2><div id="log"></div>
+    <div id="card" hidden></div>
+    <p class="hint" id="hint">Click any realm on the map to follow its fortunes.</p>
+    <h2>The Chronicle</h2>
+    <div id="chron"></div>
   </aside>
 </main>
-<script>
-// Every creature carries a genome. Nothing is scripted: behaviour emerges from
-// genes + selection. The "game" is watching which dynasty wins and why.
-const cv = document.getElementById('world'), ctx = cv.getContext('2d');
-const gcv = document.getElementById('graph'), gctx = gcv.getContext('2d');
-let W, H, creatures, food, tick, speed = 1, paused = false, history, founders, logLines, nextId;
-const rand = (a, b) => a + Math.random() * (b - a);
-const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+<footer>
+  <div class="lbl">The Ages — click one to see the map as it stood at its dawn</div>
+  <div id="timeline"></div>
+</footer>
 
-function resize() { W = cv.width = cv.clientWidth; H = cv.height = cv.clientHeight; }
+<script>
+'use strict';
+/* =====================================================================
+   Ledger of Crowns — a zero-player history generator.
+   Layers: paper (static) → watercolour washes (redrawn when borders move)
+           → ink (static terrain, coast, frame) → overlay (borders, labels).
+   ===================================================================== */
+
+// ---------- constants & rng ----------
+const MW = 1400, MH = 900, MARGIN = 38, HR = 15, SQ3 = Math.sqrt(3), OS = 1.5, GS = 5;
+const INK = '#3a2b1c', PAPER = '#eadbb6';
+const TPS = 3;                       // sim months per real second at 1×
+const CART = { x: MARGIN + 18, y: MH - MARGIN - 86, w: 330, h: 70 };
+const COMPASS = { x: MW - MARGIN - 82, y: MH - MARGIN - 82, r: 52 };
+
+let R = Math.random;
+const rnd = (a, b) => b === undefined ? R() * (a ?? 1) : a + R() * (b - a);
+const pick = a => a[Math.floor(R() * a.length)];
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const smooth = t => t * t * (3 - 2 * t);
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+function makeNoise(rng) {
+  const p = new Uint8Array(512), g = new Float32Array(256);
+  for (let i = 0; i < 256; i++) { p[i] = i; g[i] = rng(); }
+  for (let i = 255; i > 0; i--) { const j = Math.floor(rng() * (i + 1)); [p[i], p[j]] = [p[j], p[i]]; }
+  for (let i = 0; i < 256; i++) p[i + 256] = p[i];
+  const h = (x, y) => g[p[p[x & 255] + (y & 255)]];
+  return (x, y) => {
+    const xi = Math.floor(x), yi = Math.floor(y), u = smooth(x - xi), v = smooth(y - yi);
+    const a = h(xi, yi), b = h(xi + 1, yi), c = h(xi, yi + 1), d = h(xi + 1, yi + 1);
+    return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+  };
+}
+function fbm(n, x, y, oct) {
+  let s = 0, amp = .5, f = 1, norm = 0;
+  for (let i = 0; i < oct; i++) { s += amp * n(x * f + i * 17.3, y * f + i * 9.1); norm += amp; amp *= .5; f *= 2.03; }
+  return s / norm;
+}
+function mix(c1, c2, t) {
+  const a = parseInt(c1.slice(1), 16), b = parseInt(c2.slice(1), 16);
+  const ch = s => (((a >> s) & 255) * (1 - t) + ((b >> s) & 255) * t) | 0;
+  return '#' + ((1 << 24) | (ch(16) << 16) | (ch(8) << 8) | ch(0)).toString(16).slice(1);
+}
+const mk = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
+
+// ---------- names ----------
+const SYL_A = ['Os','Vel','Ka','Thar','Mor','El','Bri','Dun','Sar','Ash','Gal','Ir','Ny','Quel','Ro','Tor','Ul','Ves','Zan','Hal','Cor','Lyr','Fen','Grim','Aud','Bel','Cael','Dra','Ere','Hed','Ost','Pel','Rha','Sil','Tam','Var','Wen','Yr','Ebb','Mar'];
+const SYL_M = ['a','e','i','o','ar','en','or','il','an','y','u','ev'];
+const SYL_E = ['ry','mark','dor','heim','wyn','os','ia','ath','mere','gard','land','um','ar','esh','oth','ys','ance','holm','vale','ond','ica','ene','wick','fell'];
+const MALE = ['Aldric','Tobin','Harl','Corwin','Brannoc','Theron','Ulric','Rhun','Odo','Ketil','Garan','Dorne','Bram','Edric','Lothar','Peregrin','Anselm','Cador','Fendrel','Osric','Wystan','Hugo','Merek','Rolf'];
+const FEMALE = ['Ossa','Mirel','Vessa','Ysolde','Elda','Saska','Ilse','Maren','Lyra','Sefa','Isolt','Rowena','Aveline','Brisa','Cwen','Elswyth','Gisla','Hild','Juta','Odile','Thea','Wenna','Yara','Sigrun'];
+const KHANS = ['Kesh','Arvak','Torgul','Sabri','Urzan','Baktai','Esren','Qorvo','Tamir','Ozbeg'];
+const WAR_ADJ = ['Ashen','Salt','Long','Bitter','Crimson','Grey','Winter','Iron','Hollow','Burning','Silent','Black','Thorn','Lantern','Ninefold','Broken Oath','Red Harvest','Cold','Hundred Banners','Weeping'];
+const WAR_OF = ['the Two Crowns','the Fords','the Marches','the Passes','the Salt Roads','the Burning Fields','the River','the Stolen Bride','the Broken Seal','the Empty Throne','the Three Bridges','the Hanged Herald'];
+const ORD = ['', '', 'Second ', 'Third ', 'Fourth ', 'Fifth ', 'Sixth ', 'Seventh ', 'Eighth ', 'Ninth ', 'Tenth ', 'Eleventh ', 'Twelfth '];
+const ROMAN = ['', '', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X', 'XI', 'XII'];
+const NUMW = ['No','One','Two','Three','Four','Five','Six','Seven','Eight','Nine','Ten','Eleven','Twelve'];
+const PIG = ['#b04a3a','#3c5f8f','#c9963a','#4b8a6f','#7a4a7d','#c07a84','#7d8a35','#2f7d88','#8a5a32','#5d5a9f'];
+
+let usedNames, usedWars;
+function placeName(reserve = true) {
+  for (let k = 0; k < 40; k++) {
+    let n = pick(SYL_A) + (R() < .45 ? pick(SYL_M) : '') + pick(SYL_E);
+    n = n.replace(/([aeiouy])\1+/g, '$1');
+    if (!usedNames.has(n) && n.length <= 10) { if (reserve) usedNames.add(n); return n; }
+  }
+  return pick(SYL_A) + pick(SYL_E) + 'e';
+}
+function warName(B) {
+  const r = R();
+  let base = r < .45 ? `${pick(WAR_ADJ)} War` : r < .72 ? `${B.name} War` : `War of ${pick(WAR_OF)}`;
+  const n = (usedWars.get(base) || 0) + 1; usedWars.set(base, n);
+  if (n > 12) { usedWars.set(base, 0); return warName(B); }
+  return 'the ' + ORD[n] + base;
+}
+
+// ---------- world state ----------
+let seed, worldName, gw, gh, F, thr, hexes, land, landCount, rivers, owner, distArr;
+let factions, wars, chron, eras, ruins, tick, collapse, lastWarYear;
+let paperC, inkC, washC, washTmp, landBig, snapWashC, labels, snapLabels;
+let dirty = true, ovDirty = true, follow = null, viewEra = null, ovC;
+
+const year = () => Math.floor(tick / 12) + 1;
+
+function decoPenalty(x, y) {
+  const dx = Math.max(CART.x - x, 0, x - (CART.x + CART.w)), dy = Math.max(CART.y - y, 0, y - (CART.y + CART.h));
+  const dc = Math.hypot(dx, dy);
+  const dk = Math.max(0, Math.hypot(x - COMPASS.x, y - COMPASS.y) - COMPASS.r);
+  return .4 * (1 - smooth(clamp(dc / 45, 0, 1))) + .4 * (1 - smooth(clamp(dk / 45, 0, 1)));
+}
+
+function genWorld(s) {
+  seed = s; R = mulberry32(s);
+  usedNames = new Set(); usedWars = new Map();
+  const nE = makeNoise(R), nE2 = makeNoise(R), nM = makeNoise(R);
+  const elev = (x, y) => {
+    const e = fbm(nE, x / 330, y / 330, 5) * .8 + fbm(nE2, x / 105, y / 105, 3) * .2;
+    const ex = Math.min(x - MARGIN, MW - MARGIN - x) / (MW * .2), ey = Math.min(y - MARGIN, MH - MARGIN - y) / (MH * .22);
+    const edge = smooth(clamp(Math.min(ex, ey), 0, 1));
+    return e - (1 - edge) * .35 - decoPenalty(x, y);
+  };
+  gw = Math.ceil(MW / GS) + 1; gh = Math.ceil(MH / GS) + 1;
+  F = new Float32Array(gw * gh);
+  const inside = [];
+  for (let j = 0; j < gh; j++) for (let i = 0; i < gw; i++) {
+    const x = i * GS, y = j * GS, v = elev(x, y);
+    F[j * gw + i] = v;
+    if (x > MARGIN && x < MW - MARGIN && y > MARGIN && y < MH - MARGIN) inside.push(v);
+  }
+  inside.sort((a, b) => a - b);
+  thr = inside[Math.floor(inside.length * .54)];
+
+  // hex grid (pointy-top, odd rows shifted right)
+  const cols = Math.floor((MW - 2 * MARGIN - SQ3 * HR / 2) / (SQ3 * HR));
+  const rows = Math.floor((MH - 2 * MARGIN - HR) / (1.5 * HR));
+  const x0 = MARGIN + SQ3 * HR / 2 + 2, y0 = MARGIN + HR + 2;
+  hexes = [];
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    const x = x0 + SQ3 * HR * (c + .5 * (r & 1)), y = y0 + 1.5 * HR * r;
+    hexes.push({ i: hexes.length, c, r, x, y, e: elev(x, y), m: fbm(nM, x / 210, y / 210, 4), nb: [], ed: [], river: false, lastCap: -999 });
+  }
+  const at = (c, r) => (c < 0 || r < 0 || c >= cols || r >= rows) ? null : hexes[r * cols + c];
+  const DIR = [[[1,0],[0,-1],[-1,-1],[-1,0],[-1,1],[0,1]], [[1,0],[1,-1],[0,-1],[-1,0],[0,1],[1,1]]];
+  for (const h of hexes) {
+    h.land = h.e > thr;
+    const corners = [];
+    for (let k = 0; k < 6; k++) { const a = Math.PI / 180 * (60 * k - 90); corners.push([h.x + HR * Math.cos(a), h.y + HR * Math.sin(a)]); }
+    for (const [dc, dr] of DIR[h.r & 1]) {
+      const n = at(h.c + dc, h.r + dr); if (!n) continue;
+      const cs = corners.map(p => [Math.hypot(p[0] - n.x, p[1] - n.y), p]).sort((a, b) => a[0] - b[0]);
+      h.nb.push(n.i); h.ed.push([cs[0][1][0], cs[0][1][1], cs[1][1][0], cs[1][1][1]]);
+    }
+  }
+  land = hexes.filter(h => h.land);
+  landCount = land.length;
+  const emax = Math.max(...land.map(h => h.e));
+  const ms = land.map(h => h.m).sort((a, b) => a - b);
+  const dryQ = ms[Math.floor(ms.length * .15)], wetQ = ms[Math.floor(ms.length * .62)];
+  for (const h of land) {
+    const en = (h.e - thr) / (emax - thr);
+    h.terrain = en > .6 ? 'mountain' : en > .42 ? 'hills' : h.m < dryQ ? 'desert' : h.m > wetQ ? 'forest' : 'plains';
+    h.coast = h.nb.some(n => !hexes[n].land);
+  }
+  // rivers: walk downhill from high ground to the sea
+  rivers = [];
+  const srcs = land.filter(h => h.terrain === 'mountain' || h.terrain === 'hills').sort(() => R() - .5);
+  for (const s0 of srcs) {
+    if (rivers.length >= 7) break;
+    if (s0.river || s0.nb.some(n => hexes[n].river)) continue;
+    const path = [s0], seen = new Set([s0.i]); let cur = s0, uphill = 0;
+    while (path.length < 70) {
+      let best = null;
+      for (const n of cur.nb) if (!seen.has(n) && (!best || hexes[n].e < best.e)) best = hexes[n];
+      if (!best) break;
+      if (best.e > cur.e && ++uphill > 3) break;
+      path.push(best); seen.add(best.i); cur = best;
+      if (!best.land || best.river) break;
+    }
+    const end = path[path.length - 1];
+    if (path.length >= 5 && (!end.land || end.river)) { rivers.push(path); path.forEach(h => { if (h.land) h.river = true; }); }
+  }
+  for (const h of land) {
+    h.food = { plains: 3, forest: 2, hills: 2, desert: .8, mountain: .8 }[h.terrain] + (h.river ? 1.5 : 0) + (h.coast ? .5 : 0);
+    h.def = { plains: 1, forest: 1.3, hills: 1.5, desert: 1.1, mountain: 2.3 }[h.terrain];
+  }
+  worldName = placeName();
+}
+
+// ---------- marching squares ----------
+function contour(t) {
+  const segs = [];
+  for (let j = 0; j < gh - 1; j++) for (let i = 0; i < gw - 1; i++) {
+    const a = F[j * gw + i], b = F[j * gw + i + 1], c = F[(j + 1) * gw + i + 1], d = F[(j + 1) * gw + i];
+    const idx = (a > t ? 8 : 0) | (b > t ? 4 : 0) | (c > t ? 2 : 0) | (d > t ? 1 : 0);
+    if (idx === 0 || idx === 15) continue;
+    const x = i * GS, y = j * GS;
+    const T = [x + GS * (t - a) / (b - a), y], Rr = [x + GS, y + GS * (t - b) / (c - b)];
+    const B = [x + GS * (t - d) / (c - d), y + GS], L = [x, y + GS * (t - a) / (d - a)];
+    const add = (p, q) => segs.push(p[0], p[1], q[0], q[1]);
+    switch (idx) {
+      case 1: case 14: add(L, B); break;
+      case 2: case 13: add(B, Rr); break;
+      case 3: case 12: add(L, Rr); break;
+      case 4: case 11: add(T, Rr); break;
+      case 5: add(T, Rr); add(L, B); break;
+      case 6: case 9: add(T, B); break;
+      case 7: case 8: add(L, T); break;
+      case 10: add(L, T); add(B, Rr); break;
+    }
+  }
+  return segs;
+}
+function strokeSegs(x, segs) {
+  x.beginPath();
+  for (let k = 0; k < segs.length; k += 4) { x.moveTo(segs[k], segs[k + 1]); x.lineTo(segs[k + 2], segs[k + 3]); }
+  x.stroke();
+}
+function hexPath(x, cx, cy, r) {
+  for (let k = 0; k < 6; k++) {
+    const a = Math.PI / 180 * (60 * k - 90);
+    k ? x.lineTo(cx + r * Math.cos(a), cy + r * Math.sin(a)) : x.moveTo(cx + r * Math.cos(a), cy + r * Math.sin(a));
+  }
+  x.closePath();
+}
+
+// ---------- static layers ----------
+function renderLandMask() {
+  const small = mk(gw, gh), sx = small.getContext('2d'), img = sx.createImageData(gw, gh);
+  for (let k = 0; k < F.length; k++) { img.data[k * 4 + 3] = clamp((F[k] - thr) * 45 + .5, 0, 1) * 255; }
+  sx.putImageData(img, 0, 0);
+  landBig = mk(MW * OS, MH * OS);
+  const bx = landBig.getContext('2d');
+  bx.imageSmoothingEnabled = true; bx.imageSmoothingQuality = 'high';
+  bx.drawImage(small, -GS * OS / 2, -GS * OS / 2, gw * GS * OS, gh * GS * OS);
+}
+
+function renderPaper() {
+  paperC = mk(MW * OS, MH * OS);
+  const x = paperC.getContext('2d'); x.scale(OS, OS);
+  const pr = mulberry32(seed ^ 0x9e37);
+  x.fillStyle = PAPER; x.fillRect(0, 0, MW, MH);
+  for (let k = 0; k < 70; k++) {          // mottling
+    const cx = pr() * MW, cy = pr() * MH, rr = 60 + pr() * 240, dark = pr() < .6;
+    const g = x.createRadialGradient(cx, cy, 0, cx, cy, rr);
+    g.addColorStop(0, dark ? `rgba(150,110,60,${.03 + pr() * .05})` : `rgba(255,250,230,${.06 + pr() * .08})`);
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    x.fillStyle = g; x.fillRect(cx - rr, cy - rr, rr * 2, rr * 2);
+  }
+  for (let k = 0; k < 3; k++) {           // tea stains
+    const cx = pr() * MW, cy = pr() * MH, rr = 25 + pr() * 50;
+    x.fillStyle = 'rgba(140,95,50,.05)'; x.beginPath(); x.arc(cx, cy, rr, 0, 7); x.fill();
+    x.strokeStyle = 'rgba(130,85,40,.12)'; x.lineWidth = 1.5; x.beginPath(); x.arc(cx, cy, rr, pr() * 6, pr() * 6 + 4.5); x.stroke();
+  }
+  // sea wash, clipped to inside the frame
+  const tint = mk(MW * OS, MH * OS), tx = tint.getContext('2d');
+  tx.fillStyle = 'rgba(92,122,124,.26)';
+  tx.fillRect((MARGIN - 6) * OS, (MARGIN - 6) * OS, (MW - 2 * MARGIN + 12) * OS, (MH - 2 * MARGIN + 12) * OS);
+  tx.globalCompositeOperation = 'destination-out'; tx.drawImage(landBig, 0, 0);
+  x.drawImage(tint, 0, 0, MW, MH);
+  // fold creases
+  for (const [a, b, c, d] of [[MW / 2, 0, MW / 2, MH], [0, MH / 2, MW, MH / 2]]) {
+    x.strokeStyle = 'rgba(120,85,45,.10)'; x.lineWidth = 3; x.beginPath(); x.moveTo(a, b); x.lineTo(c, d); x.stroke();
+    x.strokeStyle = 'rgba(255,250,235,.25)'; x.lineWidth = 1; x.beginPath(); x.moveTo(a + 2, b + 2); x.lineTo(c + 2, d + 2); x.stroke();
+  }
+  const v = x.createRadialGradient(MW / 2, MH / 2, MH * .35, MW / 2, MH / 2, MW * .72);
+  v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(1, 'rgba(85,52,22,.42)');
+  x.fillStyle = v; x.fillRect(0, 0, MW, MH);
+  // grain
+  const img = x.getImageData(0, 0, paperC.width, paperC.height), d = img.data;
+  for (let k = 0; k < d.length; k += 4) { const n = (Math.random() - .5) * 16; d[k] += n; d[k + 1] += n; d[k + 2] += n * .8; }
+  x.putImageData(img, 0, 0);
+}
+
+function renderInk() {
+  inkC = mk(MW * OS, MH * OS);
+  const x = inkC.getContext('2d'); x.scale(OS, OS);
+  const ir = mulberry32(seed ^ 0x51ed);
+  const j = s => (ir() - .5) * s;
+  x.lineCap = 'round'; x.lineJoin = 'round'; x.strokeStyle = INK; x.fillStyle = INK;
+  x.save(); x.beginPath(); x.rect(MARGIN - 6, MARGIN - 6, MW - 2 * MARGIN + 12, MH - 2 * MARGIN + 12); x.clip();
+  // offshore ripple contours
+  [[.016, .5], [.036, .32], [.06, .18], [.088, .1]].forEach(([lev, al]) => { x.globalAlpha = al; x.lineWidth = .7; strokeSegs(x, contour(thr - lev)); });
+  // open-sea waves
+  x.globalAlpha = .45; x.lineWidth = .8;
+  for (let k = 0; k < 900; k++) {
+    const px = MARGIN + ir() * (MW - 2 * MARGIN), py = MARGIN + ir() * (MH - 2 * MARGIN);
+    const gi = Math.round(px / GS), gj = Math.round(py / GS);
+    if (F[gj * gw + gi] > thr - .11 || decoPenalty(px, py) > .05 || ir() < .82) continue;
+    x.beginPath(); x.moveTo(px - 6, py); x.quadraticCurveTo(px - 3, py - 3, px, py); x.quadraticCurveTo(px + 3, py + 3, px + 6, py); x.stroke();
+  }
+  x.restore();
+  // coastline: two slightly offset passes read as a hand-drawn line
+  const coast = contour(thr);
+  x.globalAlpha = .9; x.lineWidth = 1.7; strokeSegs(x, coast);
+  x.save(); x.translate(.7, .5); x.globalAlpha = .35; x.lineWidth = .7; strokeSegs(x, coast); x.restore();
+  // rivers
+  x.globalAlpha = .85; x.strokeStyle = '#33464f';
+  for (const path of rivers) {
+    const pts = path.map(h => [h.x + j(7), h.y + j(7)]);
+    for (let k = 1; k < pts.length; k++) {
+      const p0 = pts[k - 1], p1 = pts[k], m0 = k > 1 ? [(pts[k - 2][0] + p0[0]) / 2, (pts[k - 2][1] + p0[1]) / 2] : p0;
+      const m1 = [(p0[0] + p1[0]) / 2, (p0[1] + p1[1]) / 2];
+      x.lineWidth = .7 + 1.8 * k / pts.length;
+      x.beginPath(); x.moveTo(m0[0], m0[1]); x.quadraticCurveTo(p0[0], p0[1], m1[0], m1[1]); x.stroke();
+    }
+  }
+  x.strokeStyle = INK;
+  // terrain symbols, back to front
+  const items = [];
+  for (const h of land) {
+    if (h.terrain === 'mountain') { items.push(['m', h.x - 5 + j(4), h.y + 2 + j(4), 12 + j(4)]); items.push(['m', h.x + 5 + j(4), h.y + 6 + j(3), 9 + j(3)]); }
+    else if (h.terrain === 'hills') { items.push(['h', h.x - 4 + j(5), h.y + j(5), 7]); if (ir() < .7) items.push(['h', h.x + 5 + j(4), h.y + 5 + j(4), 6]); }
+    else if (h.terrain === 'forest') { for (let k = 0; k < 4; k++) items.push(['t', h.x + j(18), h.y + j(14), 5 + j(1.5)]); }
+    else if (h.terrain === 'desert') { for (let k = 0; k < 7; k++) items.push(['d', h.x + j(20), h.y + j(18), 1]); if (ir() < .5) items.push(['u', h.x + j(10), h.y + j(8), 6]); }
+    else if (ir() < .35) items.push(['g', h.x + j(14), h.y + j(12), 3]);
+  }
+  items.sort((a, b) => a[2] - b[2]);
+  for (const [k, px, py, s] of items) {
+    x.globalAlpha = .88;
+    if (k === 'm') {
+      const w = s * .8, peak = [px - w * .1, py - s];
+      x.beginPath(); x.moveTo(px - w, py); x.lineTo(peak[0], peak[1]); x.lineTo(px + w * .15, py - s * .82); x.lineTo(px + w, py);
+      x.fillStyle = '#e4d3a8'; x.fill(); x.lineWidth = 1; x.stroke();
+      x.lineWidth = .6; x.beginPath();
+      for (let t = .2; t < .95; t += .16) { const qx = peak[0] + (px + w - peak[0]) * t, qy = peak[1] + (py - peak[1]) * t; x.moveTo(qx, qy + 1); x.lineTo(qx - 1.5, py - .5); }
+      x.stroke();
+    } else if (k === 'h') {
+      x.lineWidth = .9; x.beginPath(); x.arc(px, py + s * .5, s * .7, Math.PI * 1.12, Math.PI * 1.88); x.stroke();
+      x.lineWidth = .5; x.beginPath(); x.moveTo(px + s * .2, py - s * .05); x.lineTo(px + s * .05, py + s * .25); x.moveTo(px + s * .45, py + s * .05); x.lineTo(px + s * .3, py + s * .3); x.stroke();
+    } else if (k === 't') {
+      x.lineWidth = .8; x.beginPath(); x.moveTo(px, py); x.lineTo(px, py - s * .5); x.stroke();
+      x.beginPath(); x.arc(px, py - s * .85, s * .42, 0, 7); x.fillStyle = 'rgba(96,110,58,.5)'; x.fill(); x.stroke();
+    } else if (k === 'd') {
+      x.fillStyle = INK; x.globalAlpha = .55; x.beginPath(); x.arc(px, py, .65, 0, 7); x.fill();
+    } else if (k === 'u') {
+      x.lineWidth = .6; x.globalAlpha = .6; x.beginPath(); x.moveTo(px - s, py); x.quadraticCurveTo(px, py - s * .6, px + s, py); x.stroke();
+    } else if (k === 'g') {
+      x.lineWidth = .5; x.globalAlpha = .5; x.beginPath();
+      x.moveTo(px - 2, py); x.lineTo(px - 2.6, py - 3); x.moveTo(px, py); x.lineTo(px, py - 3.6); x.moveTo(px + 2, py); x.lineTo(px + 2.6, py - 3); x.stroke();
+    }
+  }
+  x.globalAlpha = 1;
+  drawFrame(x); drawCompass(x); drawCartouche(x);
+}
+
+function drawFrame(x) {
+  const o = 12, i2 = MARGIN - 6, mid = (o + i2) / 2;
+  x.strokeStyle = INK; x.fillStyle = INK; x.globalAlpha = .9;
+  x.lineWidth = 2.4; x.strokeRect(o, o, MW - 2 * o, MH - 2 * o);
+  x.lineWidth = 1; x.strokeRect(i2, i2, MW - 2 * i2, MH - 2 * i2); x.strokeRect(mid, mid, MW - 2 * mid, MH - 2 * mid);
+  const step = 30, bw = i2 - mid;
+  for (let p = i2, k = 0; p < MW - i2 - 1; p += step, k++) if (k % 2) { const w = Math.min(step, MW - i2 - p); x.fillRect(p, mid, w, bw); x.fillRect(p, MH - i2, w, bw); }
+  for (let p = i2, k = 0; p < MH - i2 - 1; p += step, k++) if (k % 2) { const h = Math.min(step, MH - i2 - p); x.fillRect(mid, p, bw, h); x.fillRect(MW - i2, p, bw, h); }
+  for (const [cx, cy] of [[o, o], [MW - o, o], [o, MH - o], [MW - o, MH - o]]) {
+    x.fillStyle = PAPER; x.fillRect(cx - 9, cy - 9, 18, 18); x.strokeRect(cx - 9, cy - 9, 18, 18);
+    x.fillStyle = INK; x.beginPath(); x.moveTo(cx, cy - 6); x.lineTo(cx + 6, cy); x.lineTo(cx, cy + 6); x.lineTo(cx - 6, cy); x.closePath(); x.fill();
+  }
+  x.globalAlpha = 1;
+}
+function drawCompass(x) {
+  const { x: cx, y: cy, r } = COMPASS;
+  x.save(); x.translate(cx, cy); x.strokeStyle = INK; x.globalAlpha = .9;
+  x.fillStyle = 'rgba(234,219,182,.85)'; x.beginPath(); x.arc(0, 0, r, 0, 7); x.fill();
+  x.lineWidth = 1.2; x.beginPath(); x.arc(0, 0, r, 0, 7); x.stroke();
+  x.lineWidth = .6; x.beginPath(); x.arc(0, 0, r * .86, 0, 7); x.stroke();
+  for (let k = 0; k < 32; k++) { const a = k * Math.PI / 16; x.beginPath(); x.moveTo(Math.cos(a) * r * .86, Math.sin(a) * r * .86); x.lineTo(Math.cos(a) * r * (k % 4 ? .92 : .98), Math.sin(a) * r * (k % 4 ? .92 : .98)); x.stroke(); }
+  for (const long of [false, true]) for (let k = 0; k < 4; k++) {
+    const a = k * Math.PI / 2 + (long ? 0 : Math.PI / 4) - Math.PI / 2, L = long ? r * .95 : r * .58, W = long ? r * .15 : r * .1;
+    const tip = [Math.cos(a) * L, Math.sin(a) * L], l = [Math.cos(a - Math.PI / 2) * W, Math.sin(a - Math.PI / 2) * W], rr = [Math.cos(a + Math.PI / 2) * W, Math.sin(a + Math.PI / 2) * W];
+    x.lineWidth = .8;
+    x.beginPath(); x.moveTo(0, 0); x.lineTo(l[0], l[1]); x.lineTo(tip[0], tip[1]); x.closePath(); x.fillStyle = INK; x.fill(); x.stroke();
+    x.beginPath(); x.moveTo(0, 0); x.lineTo(rr[0], rr[1]); x.lineTo(tip[0], tip[1]); x.closePath(); x.fillStyle = '#efe3c4'; x.fill(); x.stroke();
+  }
+  x.fillStyle = INK; x.font = '15px "IM Fell English SC", Georgia, serif'; x.textAlign = 'center';
+  x.fillText('N', 0, -r - 5);
+  x.restore();
+}
+function drawCartouche(x) {
+  const { x: cx, y: cy, w, h } = CART;
+  x.save(); x.strokeStyle = INK; x.globalAlpha = .95;
+  x.fillStyle = '#efe3c4'; x.fillRect(cx, cy, w, h);
+  x.lineWidth = 1.6; x.strokeRect(cx, cy, w, h); x.lineWidth = .7; x.strokeRect(cx + 4, cy + 4, w - 8, h - 8);
+  for (const sx of [cx, cx + w]) {                // scroll curls
+    const dir = sx === cx ? -1 : 1;
+    x.fillStyle = '#e4d3a8';
+    x.beginPath(); x.arc(sx + dir * 6, cy + 12, 9, 0, 7); x.fill(); x.stroke();
+    x.beginPath(); x.arc(sx + dir * 6, cy + 12, 4, 0, 5); x.stroke();
+    x.beginPath(); x.arc(sx + dir * 6, cy + h - 12, 9, 0, 7); x.fill(); x.stroke();
+    x.beginPath(); x.arc(sx + dir * 6, cy + h - 12, 4, 1, 6); x.stroke();
+  }
+  x.fillStyle = INK; x.textAlign = 'center';
+  x.font = 'italic 13px "IM Fell English", Georgia, serif'; x.fillText('A Chart of the Known Lands of', cx + w / 2, cy + 21);
+  x.font = '28px "IM Fell English SC", Georgia, serif'; x.fillText(worldName, cx + w / 2, cy + 47);
+  x.font = 'italic 10.5px "IM Fell English", Georgia, serif'; x.fillText('with a true Chronicle of their Kings, kept without end', cx + w / 2, cy + 62);
+  x.restore();
+}
+
+// ---------- washes & labels ----------
+function renderWash(target, own, colorOf) {
+  const t = washTmp.getContext('2d');
+  t.setTransform(1, 0, 0, 1, 0, 0); t.clearRect(0, 0, washTmp.width, washTmp.height); t.setTransform(OS, 0, 0, OS, 0, 0);
+  for (const h of land) {
+    const o = own[h.i]; if (o < 0) continue;
+    t.fillStyle = colorOf(o); t.beginPath(); hexPath(t, h.x, h.y, HR * 1.08); t.fill();
+  }
+  // pigment pools at the edge of a wash, as real watercolour does
+  t.lineWidth = 5; t.lineCap = 'round';
+  for (const h of land) {
+    const o = own[h.i]; if (o < 0) continue;
+    t.strokeStyle = mix(colorOf(o), '#2a1d12', .3); t.beginPath();
+    h.nb.forEach((n, k) => { if (own[n] !== o) { const e = h.ed[k]; t.moveTo(e[0], e[1]); t.lineTo(e[2], e[3]); } });
+    t.stroke();
+  }
+  const w = target.getContext('2d');
+  w.setTransform(1, 0, 0, 1, 0, 0); w.clearRect(0, 0, target.width, target.height);
+  w.globalCompositeOperation = 'source-over';
+  w.globalAlpha = 1; w.filter = 'blur(7px)'; w.drawImage(washTmp, 0, 0);
+  w.globalAlpha = .35; w.filter = 'blur(2px)'; w.drawImage(washTmp, 0, 0);
+  w.filter = 'none'; w.globalAlpha = 1;
+  w.globalCompositeOperation = 'destination-in'; w.drawImage(landBig, 0, 0);
+  w.globalCompositeOperation = 'source-over';
+}
+
+function computeLabels(own, infoOf) {
+  const acc = new Map();
+  for (const h of land) {
+    const o = own[h.i]; if (o < 0) continue;
+    let a = acc.get(o); if (!a) acc.set(o, a = { n: 0, sx: 0, sy: 0, sxx: 0, syy: 0, sxy: 0, tiles: [] });
+    a.n++; a.sx += h.x; a.sy += h.y; a.sxx += h.x * h.x; a.syy += h.y * h.y; a.sxy += h.x * h.y; a.tiles.push(h);
+  }
+  const out = [];
+  for (const [o, a] of acc) {
+    const info = infoOf(o); if (!info) continue;
+    const mx = a.sx / a.n, my = a.sy / a.n;
+    let best = a.tiles[0], bd = Infinity;
+    for (const h of a.tiles) { const d = (h.x - mx) ** 2 + (h.y - my) ** 2; if (d < bd) { bd = d; best = h; } }
+    const cxx = a.sxx / a.n - mx * mx, cyy = a.syy / a.n - my * my, cxy = a.sxy / a.n - mx * my;
+    const ang = a.n < 4 ? 0 : clamp(.5 * Math.atan2(2 * cxy, cxx - cyy), -.45, .45);
+    const lx = a.n > 6 ? (mx + best.x) / 2 : best.x, ly = a.n > 6 ? (my + best.y) / 2 : best.y;
+    if (a.n < 3) continue;
+    out.push({ x: lx, y: ly, ang, size: clamp(9 + Math.sqrt(a.n) * 2.2, 10, 30), n: a.n, ...info });
+  }
+  return out.sort((p, q) => q.n - p.n);
+}
+
+// ---------- factions ----------
+function styleOf(f, size = f.size) {
+  if (f.kind === 'horde') return 'Horde';
+  if (size >= 45) return 'Empire';
+  if (size >= 18) return 'Kingdom';
+  if (size >= 7) return f.kind === 'rebel' ? 'Free State' : 'Principality';
+  return f.kind === 'rebel' ? 'Free Province' : 'Chiefdom';
+}
+const fullName = f => f.kind === 'horde' ? `the ${f.name} Horde` : `the ${styleOf(f)} of ${f.name}`;
+const dark = f => mix(f.color, '#2a1d12', .4);
+const fn = f => `<a class="fn" data-f="${f.id}" style="color:${dark(f)}">${f.name}</a>`;
+function rulerName(r) {
+  return `${r.title} ${r.given}${r.num > 1 ? ' ' + (ROMAN[r.num] || r.num) : ''}${r.epithet ? ' ' + r.epithet : ''}`;
+}
+function newRuler(f, age) {
+  const fem = f.kind !== 'horde' && R() < .4;
+  const given = f.kind === 'horde' ? pick(KHANS) : pick(fem ? FEMALE : MALE);
+  f.nameCounts[given] = (f.nameCounts[given] || 0) + 1;
+  return { given, fem, num: f.nameCounts[given], title: f.kind === 'horde' ? 'Khan' : fem ? 'Queen' : 'King',
+    age: age ?? rnd(18, 45), ability: Math.pow(R(), .8), start: year(), gained: 0, lost: 0, epithet: null, plague: false };
+}
+function newFaction(kind, capital, parent) {
+  // pick a pigment nobody nearby is wearing, so neighbouring washes stay distinct
+  const alive = factions.filter(f => f.alive), c0 = hexes[capital], near = new Set();
+  if (parent) near.add(parent.color);
+  for (const h of land) if (owner[h.i] >= 0 && (h.x - c0.x) ** 2 + (h.y - c0.y) ** 2 < 170 ** 2) near.add(factions[owner[h.i]].color);
+  const used = PIG.map(c => alive.filter(f => f.color === c).length + (near.has(c) ? 100 : 0)), min = Math.min(...used);
+  const f = {
+    id: factions.length, kind, name: placeName(), color: pick(PIG.filter((c, i) => used[i] === min)), capital,
+    alive: true, founded: year(), size: 0, food: 0, power: 1, peak: 0, peakYear: year(), nWars: 0,
+    traits: { aggr: R(), loyal: R(), ambit: R(), caut: R() },
+    allies: new Set(), truce: new Map(), plague: 0, famine: 0, horde: 0, fervor: 0, lostCap: 0, broken: false,
+    nameCounts: {}, rulers: [], log: [], parent: parent ? parent.id : -1, fronts: new Map(), wildFront: [], fell: null,
+  };
+  if (kind === 'horde') { f.traits.aggr = .8 + R() * .2; f.traits.ambit = .8 + R() * .2; f.horde = 2.2; }
+  if (kind === 'rebel') { f.traits.aggr = .4 + R() * .5; }
+  if (parent) f.fervor = 1.2;
+  f.ruler = newRuler(f, kind === 'realm' ? undefined : rnd(25, 45));
+  factions.push(f);
+  return f;
+}
+
+function event(text, fs = [], cls = '') {
+  text = text.charAt(0).toUpperCase() + text.slice(1);
+  const e = { y: year(), text, cls };
+  for (const f of fs) { f.log.push(e); if (f.log.length > 40) f.log.shift(); }
+  if (cls !== 'minor') chron.push(e);
+  if (chron.length > 2000) chron.splice(0, 500);
+  if (cls !== 'minor') pushChronDom(e);
+}
+
+// ---------- war & diplomacy ----------
+const warBetween = (a, b) => wars.find(w => (w.a === a.id && w.b === b.id) || (w.a === b.id && w.b === a.id));
+function declareWar(X, Y, name, quiet) {
+  if (X === Y || !X.alive || !Y.alive || warBetween(X, Y)) return null;
+  X.allies.delete(Y.id); Y.allies.delete(X.id);
+  const w = { a: X.id, b: Y.id, name: name || warName(Y), start: tick, sa: Math.max(1, X.size), sb: Math.max(1, Y.size), ga: 0, gb: 0 };
+  wars.push(w); lastWarYear = year();
+  if (!quiet) event(`${fn(X)} declares war on ${fn(Y)}. So begins ${w.name}.`, [X, Y], X.size + Y.size >= 12 ? '' : 'minor');
+  // allies are called to the banners
+  for (const id of [...Y.allies]) {
+    const A = factions[id];
+    if (A.alive && A !== X && !warBetween(A, X) && R() < A.traits.loyal * .85) {
+      declareWar(A, X, w.name, true); event(`Honouring old oaths, ${fn(A)} rides to the aid of ${fn(Y)}.`, [A, Y], A.size >= 15 && Y.size >= 15 ? '' : 'minor');
+    }
+  }
+  return w;
+}
+function endWar(w) {
+  wars.splice(wars.indexOf(w), 1);
+  const A = factions[w.a], B = factions[w.b];
+  if (!A.alive || !B.alive) return;
+  const until = tick + 12 * rnd(8, 20);
+  A.truce.set(B.id, until); B.truce.set(A.id, until);
+  const net = w.ga - w.gb, treaty = `the Treaty of ${placeName(false)}`;
+  if (A.kind === 'rebel' && A.parent === B.id && A.size > 0) event(`${w.name} ends. ${fn(B)} bows to the inevitable and recognises the independence of ${fn(A)}.`, [A, B], A.size >= 6 ? '' : 'minor');
+  else if (net > 3) event(`${w.name} ends with ${treaty}; ${fn(A)} keeps ${net} provinces wrested from ${fn(B)}.`, [A, B]);
+  else if (net < -3) event(`${w.name} ends with ${treaty}; ${fn(B)} keeps ${-net} provinces taken from ${fn(A)}.`, [A, B]);
+  else event(`${w.name} sputters out in exhaustion. Neither ${fn(A)} nor ${fn(B)} gains much.`, [A, B], A.size + B.size >= 25 ? '' : 'minor');
+}
+function ally(A, B) {
+  if (A.allies.size >= 3 || B.allies.size >= 3) return;
+  A.allies.add(B.id); B.allies.add(A.id);
+  event(`${fn(A)} and ${fn(B)} swear the ${placeName(false)} Pact.`, [A, B], A.size >= 10 && B.size >= 10 ? '' : 'minor');
+}
+
+// ---------- the monthly tick ----------
+function aliveList() { return factions.filter(f => f.alive); }
+
+function computeStats() {
+  const al = aliveList();
+  for (const f of al) { f.size = 0; f.food = 0; f.fronts.clear(); f.wildFront.length = 0; f.nWars = 0; }
+  for (const w of wars) { factions[w.a].nWars++; factions[w.b].nWars++; }
+  for (const h of land) {
+    const o = owner[h.i]; if (o < 0) continue;
+    const f = factions[o]; f.size++; f.food += h.food;
+    for (const n of h.nb) {
+      const on = owner[n]; if (on === o || !hexes[n].land) continue;
+      if (on < 0) f.wildFront.push(n);
+      else { let a = f.fronts.get(on); if (!a) f.fronts.set(on, a = []); a.push(n); }
+    }
+  }
+  distArr.fill(-1);
+  for (const f of al) {
+    if (f.size === 0) { die(f); continue; }
+    if (owner[f.capital] !== f.id) relocateCapital(f);
+    const q = [f.capital]; distArr[f.capital] = 0;
+    for (let qi = 0; qi < q.length; qi++) {
+      const c = q[qi];
+      for (const n of hexes[c].nb) if (owner[n] === f.id && distArr[n] < 0) { distArr[n] = distArr[c] + 1; q.push(n); }
+    }
+    // big realms are slow, corrupt and stretched thin: power falls off sharply with share of the map
+    const share = f.size / landCount, sprawl = 1 / (1 + (share * 2.3) ** 2);
+    f.power = Math.pow(f.food, .8) * sprawl * (.7 + .6 * f.ruler.ability) * (f.plague > 0 ? .55 : 1) * (f.famine > 0 ? .7 : 1) * (1 + f.horde + f.fervor);
+    if (f.size > f.peak) { f.peak = f.size; f.peakYear = year(); }
+  }
+}
+function relocateCapital(f) {
+  let best = -1, bs = -1;
+  for (const h of land) if (owner[h.i] === f.id) {
+    const s = h.food + h.nb.filter(n => owner[n] === f.id).length + R();
+    if (s > bs) { bs = s; best = h.i; }
+  }
+  if (best >= 0) f.capital = best;
+}
+
+function expansion() {
+  for (const f of aliveList()) {
+    if (!f.wildFront.length || R() > .22 * (.4 + f.traits.ambit) * (f.horde > .3 ? 1.6 : 1)) continue;
+    let best = -1, bs = -1;
+    for (let k = 0; k < 3; k++) { const n = pick(f.wildFront), s = hexes[n].food + R(); if (s > bs) { bs = s; best = n; } }
+    if (owner[best] >= 0 || (hexes[best].terrain === 'mountain' && R() < .5)) continue;
+    owner[best] = f.id; dirty = true;
+  }
+}
+
+function battles() {
+  for (const w of wars.slice()) {
+    const A = factions[w.a], B = factions[w.b];
+    if (!A.alive || !B.alive) continue;
+    attack(A, B, w, 'ga'); attack(B, A, w, 'gb');
+  }
+}
+function attack(X, Y, w, key) {
+  const front = X.fronts.get(Y.id); if (!front || !front.length) return;
+  const tries = 1 + Math.floor(front.length / 10);
+  for (let k = 0; k < tries; k++) {
+    const t = hexes[pick(front)];
+    if (owner[t.i] !== Y.id) continue;
+    const px = X.power / Math.pow(Math.max(1, X.nWars), .7), py = Y.power / Math.pow(Math.max(1, Y.nWars), .7);
+    const def = t.def * (t.i === Y.capital ? 1.8 : 1) * (1 + .3 * Y.traits.caut);
+    if (R() < .3 * px / (px + py * def)) {
+      owner[t.i] = X.id; t.lastCap = tick; w[key]++; X.ruler.gained++; Y.ruler.lost++; dirty = true;
+      if (t.i === Y.capital) {
+        Y.lostCap = tick + 36; relocateCapital(Y);
+        event(`${fn(X)} storms and sacks the capital of ${fn(Y)}. ${rulerName(Y.ruler)} flees.`, [X, Y], Y.size >= 12 ? 'big' : 'minor');
+      }
+    }
+  }
+}
+
+function revolts() {
+  const al = aliveList(), max = new Map();
+  const over = new Map(al.map(f => {
+    const share = f.size / landCount;
+    return [f.id, share * 1.5 + (share > .28 ? .4 : 0) + (f.plague > 0 ? .25 : 0) + (f.lostCap > tick ? .25 : 0)
+      + (f.nWars > 1 ? .1 : 0) - f.ruler.ability * .35 - f.traits.loyal * .1];
+  }));
+  for (const h of land) {
+    const o = owner[h.i]; if (o < 0) continue;
+    const d = distArr[h.i], u = (d < 0 ? 1.4 : d * .05) + over.get(o);
+    const m = max.get(o); if (!m || u > m.u) max.set(o, { u, h });
+  }
+  for (const f of al) {
+    if (f.size < 10) continue;
+    const m = max.get(f.id); if (!m || m.u < .62 || R() > (m.u - .62) * .08) continue;
+    revolt(f, m.h, m.u, over.get(f.id));
+  }
+}
+function revolt(f, seedTile, maxU, over) {
+  const region = [seedTile.i], seen = new Set(region), cap = 5 + Math.floor(R() * 16) + Math.floor(f.size / 12);
+  for (let qi = 0; qi < region.length && region.length < cap; qi++) {
+    for (const n of hexes[region[qi]].nb) {
+      if (seen.has(n) || owner[n] !== f.id || n === f.capital) continue;
+      seen.add(n);
+      const d = distArr[n], u = (d < 0 ? 1.4 : d * .05) + over;
+      if (u >= maxU - .3) region.push(n);
+    }
+  }
+  if (region.length < 3 && distArr[seedTile.i] >= 0) return;
+  const r = newFaction('rebel', seedTile.i, f);
+  for (const i of region) owner[i] = r.id;
+  r.size = region.length; dirty = true;
+  event(`The far provinces of ${fn(f)} rise in revolt. ${rulerName(r.ruler)} is acclaimed lord of ${fn(r)}.`, [f, r]);
+  declareWar(r, f, `the Revolt of ${r.name}`, true);
+}
+
+function rulers() {
+  for (const f of aliveList()) {
+    const r = f.ruler; r.age += 1 / 12;
+    if (f.plague > 0) r.plague = true;
+    if (R() < .0018 + Math.max(0, r.age - 42) ** 2 * .00004 + (f.plague > 0 ? .002 : 0)) succession(f);
+  }
+}
+function epithetFor(r) {
+  const reign = year() - r.start, net = r.gained - r.lost;
+  if (reign < 3) return 'the Brief';
+  if (net > 10) return pick(['the Conqueror', 'the Great', 'the Bold', 'the Lion', 'Ironhand']);
+  if (net < -10) return pick(['the Unready', 'the Luckless', 'the Lame', 'Lackland', 'the Humbled']);
+  if (r.plague && R() < .5) return 'the Pale';
+  if (reign > 35) return 'the Old';
+  if (r.ability > .82) return 'the Wise';
+  return pick(['the Just', 'the Quiet', 'the Pious', 'the Fat', 'the Grey', 'the Fair', 'the Stern', 'the Kind', 'the Cruel', 'the Fowler']);
+}
+function succession(f) {
+  const old = f.ruler, reign = year() - old.start;
+  old.end = year(); old.epithet = epithetFor(old); f.rulers.push(old);
+  const heir = newRuler(f, rnd(14, 40)); f.ruler = heir;
+  event(`${rulerName(old)} of ${fn(f)} dies after ${reign < 1 ? 'mere months' : reign + ' years'} on the throne; ${rulerName(heir)} succeeds.`, [f], f.size >= 12 ? '' : 'minor');
+  const share = f.size / landCount;
+  if (f.size >= 10 && R() < .05 + (1 - heir.ability) * .22 + share * .9) civilWar(f);
+}
+function civilWar(f) {
+  let seat = -1, sd = -1;
+  for (const h of land) if (owner[h.i] === f.id && distArr[h.i] > sd + R() * 2) { sd = distArr[h.i]; seat = h.i; }
+  if (sd < 3) return;
+  const dB = new Int16Array(hexes.length).fill(-1), q = [seat]; dB[seat] = 0;
+  for (let qi = 0; qi < q.length; qi++) for (const n of hexes[q[qi]].nb) if (owner[n] === f.id && dB[n] < 0) { dB[n] = dB[q[qi]] + 1; q.push(n); }
+  const p = newFaction('realm', seat, f);
+  let n = 0;
+  for (const h of land) if (owner[h.i] === f.id && h.i !== f.capital && dB[h.i] >= 0 && (distArr[h.i] < 0 || dB[h.i] < distArr[h.i])) { owner[h.i] = p.id; n++; }
+  p.size = n; dirty = true;
+  const name = `the War of the ${f.name} Succession`;
+  event(`The succession in ${fn(f)} is disputed. ${rulerName(p.ruler)} seizes the western halls and proclaims ${fn(p)}: ${name} begins.`
+    .replace('western', pick(['western', 'eastern', 'northern', 'southern', 'outer'])), [f, p], 'big');
+  declareWar(p, f, name, true);
+}
+
+function diplomacy() {
+  const al = aliveList();
+  for (const A of al) for (const [bid] of A.fronts) {
+    const B = factions[bid];
+    if (!B.alive || B.id < A.id) continue;
+    if (warBetween(A, B)) continue;
+    if (A.allies.has(B.id)) {
+      for (const [X, Y] of [[A, B], [B, A]]) {
+        if (X.traits.loyal < .45 && X.power > Y.power * 1.6 && R() < .12 * X.traits.ambit) {
+          const w = declareWar(X, Y, null, true);
+          if (w) event(`Faithless ${fn(X)} breaks its oaths and falls upon its ally ${fn(Y)}: ${w.name} begins.`, [X, Y], 'big');
+          break;
+        }
+      }
+      continue;
+    }
+    for (const [X, Y] of [[A, B], [B, A]]) {
+      if ((X.truce.get(Y.id) || 0) > tick) continue;
+      const ratio = X.power / Math.max(.1, Y.power), share = Y.size / landCount;
+      let p = .005 + X.traits.aggr * .06 * clamp(ratio - .9, 0, 1.5) + (share > .28 ? .12 : 0) + (X.horde > .3 ? .3 : 0);
+      if (R() < p) { declareWar(X, Y); break; }
+    }
+  }
+  // coalitions against whoever is biggest
+  const top = al.reduce((a, b) => (b.size > (a?.size ?? -1) ? b : a), null);
+  if (top && top.size / landCount > .2) {
+    const nbs = [...top.fronts.keys()].map(id => factions[id]).filter(f => f.alive);
+    for (let i = 0; i < nbs.length; i++) for (let k = i + 1; k < nbs.length; k++) {
+      const a = nbs[i], b = nbs[k];
+      if (!a.allies.has(b.id) && !warBetween(a, b) && R() < .12) ally(a, b);
+    }
+  }
+  for (const A of al) for (const [bid] of A.fronts) {
+    const B = factions[bid];
+    if (B.id > A.id && !A.allies.has(B.id) && !warBetween(A, B) && A.traits.loyal > .55 && B.traits.loyal > .55 && R() < .02) ally(A, B);
+  }
+  // peace
+  for (const w of wars.slice()) {
+    const A = factions[w.a], B = factions[w.b];
+    const yrs = (tick - w.start) / 12, la = 1 - A.size / w.sa, lb = 1 - B.size / w.sb;
+    if (R() < .05 + yrs * .015 + Math.max(la, lb, 0) * .5) endWar(w);
+  }
+}
+
+function disasters() {
+  const al = aliveList();
+  if (!al.length) return;
+  const bySize = () => { let s = al.reduce((a, f) => a + f.size ** 1.3, 0) * R(); for (const f of al) { s -= f.size ** 1.3; if (s <= 0) return f; } return al[0]; };
+  if (R() < 1 / 45) {
+    const f = bySize(); if (f.plague <= 0) { f.plague = 12 * rnd(3, 6); event(`${pick(['The Grey Sickness', 'The Sweating Plague', 'A red pestilence', 'The Coughing Death'])} comes to ${fn(f)}. The dead are carted out by night.`, [f], 'big'); }
+  }
+  for (const f of al) if (f.plague > 24) for (const [id] of f.fronts) {
+    const g = factions[id]; if (g.alive && g.plague <= 0 && R() < .2) { g.plague = 12 * rnd(2, 4); event(`The pestilence crosses into ${fn(g)}.`, [g], g.size >= 12 ? '' : 'minor'); }
+  }
+  if (R() < 1 / 55) { const f = bySize(); if (f.famine <= 0) { f.famine = 12 * rnd(2, 3); event(`The harvests fail in ${fn(f)}; famine stalks the villages.`, [f]); } }
+  const hegemon = al.some(f => f.size / landCount > .3);
+  if (R() < 1 / 70 + (hegemon ? 1 / 35 : 0)) spawnHorde();
+  for (const f of al) { f.horde *= .87; f.fervor *= .8; }
+}
+function spawnHorde() {
+  const edge = land.map(h => [Math.min(h.x - MARGIN, MW - MARGIN - h.x, h.y - MARGIN, MH - MARGIN - h.y) + R() * 40, h])
+    .sort((a, b) => a[0] - b[0]).slice(0, 25);
+  if (!edge.length) return;
+  const t = pick(edge)[1];
+  const h = newFaction('horde', t.i), victims = new Set();
+  for (const i of [t.i, ...t.nb]) if (hexes[i].land) { if (owner[i] >= 0) victims.add(owner[i]); owner[i] = h.id; }
+  for (const id of victims) { const v = factions[id]; if (v.alive && owner[v.capital] === h.id) relocateCapital(v); }
+  dirty = true;
+  event(`From beyond the edge of the map ride ${fn(h)} under ${rulerName(h.ruler)}. The steppe-bells are heard for the first time.`, [h], 'big');
+  for (const id of victims) declareWar(h, factions[id], null, true);
+}
+function spawnTribes() {
+  const wild = land.filter(h => owner[h.i] < 0 && h.nb.every(n => owner[n] < 0));
+  if (wild.length < 8 || R() > .45) return;
+  const t = pick(wild), f = newFaction('realm', t.i);
+  owner[t.i] = f.id;
+  for (const n of t.nb) if (hexes[n].land && owner[n] < 0) owner[n] = f.id;
+  dirty = true;
+  event(`In the empty lands, the clans of ${fn(f)} raise a chieftain: ${rulerName(f.ruler)}.`, [f]);
+}
+function die(f) {
+  f.alive = false; f.fell = year();
+  const c = hexes[f.capital];
+  ruins.push({ x: c.x, y: c.y, name: f.name, year: year(), peak: f.peak });
+  if (ruins.length > 14) ruins.shift();
+  for (const w of wars.slice()) if (w.a === f.id || w.b === f.id) wars.splice(wars.indexOf(w), 1);
+  for (const g of factions) g.allies.delete(f.id);
+  f.allies.clear();
+  const great = f.peak >= landCount * .15;
+  if (great) collapse = { name: f.name, until: tick + 60 };
+  event(great ? `The last banner of ${fn(f)} is lowered. What was once ${f.peak} provinces is now only a name in this ledger.`
+              : `${fn(f)} is no more; its lands pass to others.`, [f], great ? 'big' : f.peak >= 10 ? '' : 'minor');
+  if (follow === f.id) renderCard();
+}
+
+function eraCheck() {
+  const cur = eras[eras.length - 1], yrs = year() - cur.start;
+  if (yrs < 15) return;
+  const al = aliveList(); if (!al.length) return;
+  const top = al.reduce((a, b) => b.size > a.size ? b : a);
+  const share = top.size / landCount;
+  for (const f of al) if (!f.broken && f.peak >= landCount * .18 && f.size < f.peak * .45) {
+    f.broken = true; collapse = { name: f.name, until: tick + 60 };
+    event(`The power of ${fn(f)} is broken; its provinces drift away like leaves.`, [f], 'big');
+  }
+  let name = null, kind = null;
+  const recent = (k, span = 80) => eras.some(e => e.kind === k && year() - e.start < span);
+  if (share > .32 && !recent('asc' + top.id)) { name = `The ${top.name} Ascendancy`; kind = 'asc' + top.id; }
+  else if (collapse && collapse.until > tick && !recent('sunder')) { name = pick(['The Sundering', 'The Age of Ashes', `The Breaking of ${collapse.name}`, 'The Long Twilight']); kind = 'sunder'; }
+  else if (al.filter(f => f.plague > 0).length >= 4 && !recent('plague', 150)) { name = 'The Years of the Pestilence'; kind = 'plague'; }
+  else if (yrs > 70) {
+    kind = 'age' + year();
+    name = year() - lastWarYear > 15 ? 'The Long Peace' : al.length <= 12 && R() < .6 ? `The Age of ${NUMW[al.length]} Crowns` : pick(['The Age of Strife', 'The Age of Banners', 'The Iron Years', 'The Age of Oaths', 'The Quarrelling Kings']);
+  }
+  if (name) startEra(name, kind);
+}
+function startEra(name, kind) {
+  const info = new Map();
+  for (const f of aliveList()) info.set(f.id, { name: f.name, color: f.color, capital: f.capital, sub: styleOf(f) });
+  eras.push({ name, kind, start: year(), snap: { owner: Int16Array.from(owner), info } });
+  if (eras.length > 1) event(name, [], 'era');
+  renderTimeline();
+}
+
+function simTick() {
+  tick++;
+  computeStats();
+  expansion();
+  battles();
+  if (tick % 3 === 0) revolts();
+  rulers();
+  for (const f of aliveList()) { if (f.plague > 0) f.plague--; if (f.famine > 0) f.famine--; }
+  if (tick % 12 === 0) { diplomacy(); disasters(); spawnTribes(); eraCheck(); }
+}
+
+// ---------- new world ----------
+function newWorld(s) {
+  genWorld(s);
+  owner = new Int16Array(hexes.length).fill(-1);
+  distArr = new Int16Array(hexes.length).fill(-1);
+  factions = []; wars = []; chron = []; eras = []; ruins = []; tick = 0; collapse = null; lastWarYear = 0;
+  follow = null; viewEra = null; labels = []; snapLabels = [];
+  document.getElementById('chron').innerHTML = '';
+  renderLandMask(); renderPaper(); renderInk();
+  ovC = mk(MW * OS, MH * OS); washC = mk(MW * OS, MH * OS); washTmp = mk(MW * OS, MH * OS); snapWashC = mk(MW * OS, MH * OS);
+  // seven founding peoples, spread apart
+  const starts = [];
+  for (let k = 0; k < 400 && starts.length < 7; k++) {
+    const h = pick(land);
+    if (h.terrain === 'mountain' || starts.some(s => Math.hypot(s.x - h.x, s.y - h.y) < 170)) continue;
+    starts.push(h);
+  }
+  event(`Here begins the chronicle of the lands of ${worldName}.`, [], 'era');
+  for (const h of starts) {
+    const f = newFaction('realm', h.i);
+    owner[h.i] = f.id; for (const n of h.nb) if (hexes[n].land) owner[n] = f.id;
+    event(`${rulerName(f.ruler)} gathers the clans of ${fn(f)}.`, [f]);
+  }
+  startEra('The Age of Founding', 'found');
+  computeStats();
+  dirty = true; renderCard(); renderTimeline(); resize();
+  const u = new URL(location.href); u.searchParams.set('seed', s); history.replaceState(null, '', u);
+}
+
+// ---------- drawing ----------
+const cv = document.getElementById('map'), ctx = cv.getContext('2d');
+let scale = 1, ox = 0, oy = 0, dpr = 1;
+function resize() {
+  const wrap = document.getElementById('mapwrap'), w = wrap.clientWidth, h = wrap.clientHeight;
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+  scale = Math.min(w / MW, h / MH); ox = (w - MW * scale) / 2; oy = (h - MH * scale) / 2;
+  needDraw = true;
+}
 addEventListener('resize', resize);
 
-function log(msg) {
-  logLines.unshift(`t${Math.floor(tick / 60)}: ${msg}`);
-  logLines.length = Math.min(logLines.length, 12);
-  document.getElementById('log').innerHTML = logLines.map(l => `<div>${l}</div>`).join('');
+function spaced(s) { return s.toUpperCase().split('').join(' '); }
+
+// borders, names, capitals and ruins: redrawn only when something changes
+function drawOverlay(x, own, labs, live) {
+  x.lineCap = 'round';
+  // borders: dash-dot between realms, faint dots against the wilds
+  const between = new Path2D(), wild = new Path2D();
+  for (const h of land) {
+    const o = own[h.i];
+    h.nb.forEach((n, k) => {
+      if (n < h.i || !hexes[n].land) return;
+      const on = own[n]; if (on === o) return;
+      const e = h.ed[k], p = (o >= 0 && on >= 0) ? between : wild;
+      p.moveTo(e[0], e[1]); p.lineTo(e[2], e[3]);
+    });
+  }
+  x.strokeStyle = INK;
+  x.setLineDash([3, 2.4, .1, 2.4]); x.lineWidth = 1.2; x.globalAlpha = .8; x.stroke(between);
+  x.setLineDash([.1, 3]); x.lineWidth = 1; x.globalAlpha = .45; x.stroke(wild);
+  x.setLineDash([]); x.globalAlpha = 1;
+  // the followed realm gets a firm outline
+  const fol = follow != null && (live ? factions[follow]?.alive : labs.some(l => l.id === follow)) ? follow : null;
+  if (fol != null) {
+    const p = new Path2D();
+    for (const h of land) if (own[h.i] === fol) h.nb.forEach((n, k) => { if (own[n] !== fol) { const e = h.ed[k]; p.moveTo(e[0], e[1]); p.lineTo(e[2], e[3]); } });
+    x.strokeStyle = dark(factions[fol]); x.lineWidth = 2.6; x.globalAlpha = .9; x.stroke(p); x.globalAlpha = 1;
+  }
+  if (live) {
+    // ruins of the fallen
+    for (const r of ruins) {
+      const fade = clamp(1 - (year() - r.year) / 200, 0, 1); if (fade <= 0) continue;
+      x.globalAlpha = .7 * fade; ruin(x, r.x, r.y);
+      x.font = `italic ${clamp(8 + Math.sqrt(r.peak), 9, 14)}px "IM Fell English", Georgia, serif`; x.textAlign = 'center';
+      x.fillStyle = '#5c4a38'; x.fillText(`old ${r.name}`, r.x, r.y + 15);
+    }
+    x.globalAlpha = 1;
+  }
+  // capitals
+  for (const l of labs) { const c = hexes[l.capital]; if (c && own[c.i] === l.id) castle(x, c.x, c.y, l.color); }
+  // names
+  x.textAlign = 'center'; x.textBaseline = 'middle';
+  for (const l of labs) {
+    x.save(); x.translate(l.x, l.y - (l.n > 3 ? 12 : 14)); x.rotate(l.ang);
+    x.font = `${l.size}px "IM Fell English SC", Georgia, serif`;
+    const txt = spaced(l.name);
+    x.lineWidth = 3.2; x.strokeStyle = 'rgba(234,219,182,.75)'; x.strokeText(txt, 0, 0);
+    x.fillStyle = mix(l.color, '#20150c', .55); x.fillText(txt, 0, 0);
+    if (l.n >= 12) {
+      x.font = `italic ${Math.max(10, l.size * .45)}px "IM Fell English", Georgia, serif`;
+      x.strokeText(l.sub, 0, l.size * .72); x.fillText(l.sub, 0, l.size * .72);
+    }
+    x.restore();
+  }
+  x.textBaseline = 'alphabetic';
+}
+// per-frame marks: fresh conquests and the swords on each front
+function drawLiveMarks(x) {
+  const own = owner;
+  {
+    // fresh conquests: red-brown hatching that fades over three years
+    x.strokeStyle = '#7a2418'; x.lineWidth = .8;
+    for (const h of land) {
+      const age = tick - h.lastCap; if (age > 36) continue;
+      x.globalAlpha = .55 * (1 - age / 36); x.beginPath();
+      for (let k = -2; k <= 2; k++) { x.moveTo(h.x + k * 4 - 4, h.y + 6); x.lineTo(h.x + k * 4 + 4, h.y - 6); }
+      x.stroke();
+    }
+    x.globalAlpha = 1;
+    // crossed swords on each active front
+    for (const w of wars) {
+      const A = factions[w.a], B = factions[w.b], fr = A.fronts.get(B.id);
+      if (!fr || !fr.length) continue;
+      if (!w.mark || tick - w.markT > 30 || own[w.mark.a] !== A.id || own[w.mark.b] !== B.id) {
+        const b = fr[Math.floor(Math.random() * fr.length)], a = hexes[b].nb.find(n => own[n] === A.id);
+        if (a == null) continue;
+        w.mark = { a, b }; w.markT = tick;
+      }
+      const pa = hexes[w.mark.a], pb = hexes[w.mark.b];
+      swords(x, (pa.x + pb.x) / 2, (pa.y + pb.y) / 2);
+    }
+  }
+}
+function castle(x, px, py, color) {
+  x.save(); x.translate(px, py); x.strokeStyle = INK; x.lineWidth = .9;
+  x.fillStyle = '#efe3c4';
+  x.beginPath(); x.rect(-5, -4, 10, 7); x.fill(); x.stroke();
+  x.beginPath(); for (const cx of [-5, -1, 3]) x.rect(cx, -6.5, 2, 2.5); x.fill(); x.stroke();
+  x.beginPath(); x.moveTo(0, -6.5); x.lineTo(0, -13); x.stroke();
+  x.fillStyle = color; x.beginPath(); x.moveTo(0, -13); x.lineTo(6, -11.3); x.lineTo(0, -9.6); x.closePath(); x.fill(); x.stroke();
+  x.restore();
+}
+function swords(x, px, py) {
+  x.save(); x.translate(px, py); x.strokeStyle = '#6e1d12'; x.lineWidth = 1.5;
+  for (const s of [1, -1]) {
+    x.save(); x.rotate(s * Math.PI / 4);
+    x.beginPath(); x.moveTo(0, -8); x.lineTo(0, 6); x.moveTo(-3, 3.5); x.lineTo(3, 3.5); x.stroke();
+    x.restore();
+  }
+  x.restore();
+}
+function ruin(x, px, py) {
+  x.save(); x.translate(px, py); x.strokeStyle = '#5c4a38'; x.lineWidth = .9; x.fillStyle = '#e4d3a8';
+  x.beginPath(); x.moveTo(-6, 4); x.lineTo(-6, -4); x.lineTo(-4, -6); x.lineTo(-2, -3); x.lineTo(-2, 4); x.closePath(); x.fill(); x.stroke();
+  x.beginPath(); x.moveTo(2, 4); x.lineTo(2, -1); x.lineTo(4, -2.5); x.lineTo(6, 0); x.lineTo(6, 4); x.closePath(); x.fill(); x.stroke();
+  x.beginPath(); x.moveTo(-8, 4.5); x.lineTo(8, 4.5); x.stroke();
+  x.restore();
 }
 
-function makeCreature(genome, x, y, dynasty, gen) {
-  return { id: nextId++, x, y, vx: 0, vy: 0, g: genome, energy: 60, age: 0, dynasty, gen };
+function liveInfo(id) {
+  const f = factions[id]; if (!f || !f.alive) return null;
+  return { id, name: f.name, color: f.color, capital: f.capital, sub: f.kind === 'horde' ? 'the Horde' : styleOf(f) };
 }
-function mutate(g) {
-  const m = k => clamp(g[k] * rand(0.88, 1.12), 0.2, 3);
-  return { speed: m('speed'), size: m('size'), sense: m('sense'), aggro: clamp(g.aggro + rand(-0.08, 0.08), 0, 1) };
+function draw() {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = '#241a13'; ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * ox, dpr * oy);
+  ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.fillRect(3, 6, MW, MH);
+  ctx.drawImage(paperC, 0, 0, MW, MH);
+  ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.globalAlpha = .62;
+  ctx.drawImage(viewEra ? snapWashC : washC, 0, 0, MW, MH); ctx.restore();
+  ctx.drawImage(inkC, 0, 0, MW, MH);
+  if (!viewEra) drawLiveMarks(ctx);
+  if (ovDirty) {
+    const o = ovC.getContext('2d');
+    o.setTransform(1, 0, 0, 1, 0, 0); o.clearRect(0, 0, ovC.width, ovC.height); o.setTransform(OS, 0, 0, OS, 0, 0);
+    if (viewEra) drawOverlay(o, viewEra.snap.owner, snapLabels, false); else drawOverlay(o, owner, labels, true);
+    ovDirty = false;
+  }
+  ctx.drawImage(ovC, 0, 0, MW, MH);
 }
 
-function reset() {
-  resize();
-  creatures = []; food = []; tick = 0; history = []; logLines = []; nextId = 0;
-  const names = ['Ember', 'Tide', 'Moss', 'Violet', 'Bone', 'Gold'];
-  const hues = [10, 200, 120, 280, 40, 55];
-  founders = names.map((n, i) => ({ name: n, hue: hues[i], best: 1, extinctAt: null, maxGen: 0 }));
-  founders.forEach((f, i) => {
-    const g = { speed: rand(0.6, 1.6), size: rand(0.6, 1.6), sense: rand(0.6, 1.6), aggro: rand(0, 1) };
-    for (let k = 0; k < 6; k++) creatures.push(makeCreature(mutate(g), rand(0, W), rand(0, H), i, 0));
+// ---------- side panel ----------
+const chronEl = document.getElementById('chron');
+function pushChronDom(e) {
+  const d = document.createElement('div');
+  if (e.cls === 'era') { d.className = 'era'; d.innerHTML = e.text; }
+  else { d.className = 'ev' + (e.cls ? ' ' + e.cls : ''); d.innerHTML = `<span class="y">Y.${e.y}</span> ${e.text}`; }
+  chronEl.prepend(d);
+  while (chronEl.childNodes.length > 250) chronEl.lastChild.remove();
+}
+const traitWords = t => [
+  t.aggr > .66 ? 'warlike' : t.aggr < .33 ? 'peaceable' : null,
+  t.loyal > .66 ? 'faithful' : t.loyal < .33 ? 'faithless' : null,
+  t.ambit > .66 ? 'ambitious' : t.ambit < .33 ? 'content' : null,
+  t.caut > .66 ? 'cautious' : t.caut < .33 ? 'reckless' : null,
+].filter(Boolean).join(', ') || 'unremarkable';
+const abilityWord = a => a > .75 ? 'gifted' : a > .45 ? 'capable' : a > .2 ? 'middling' : 'feeble';
+function renderCard() {
+  ovDirty = true;
+  const card = document.getElementById('card'), hint = document.getElementById('hint');
+  const f = follow != null ? factions[follow] : null;
+  if (!f) { card.hidden = true; hint.hidden = false; return; }
+  card.hidden = false; hint.hidden = true;
+  const r = f.ruler, foes = wars.filter(w => w.a === f.id || w.b === f.id).map(w => fn(factions[w.a === f.id ? w.b : w.a]));
+  const allies = [...f.allies].map(id => fn(factions[id]));
+  const past = f.rulers.slice(-6).reverse().map(p => `<li>${rulerName(p)} <span style="color:var(--muted)">(Y.${p.start}–${p.end})</span></li>`).join('');
+  const deeds = f.log.slice(-8).reverse().map(e => `<li><span style="color:var(--muted)">Y.${e.y}</span> ${e.text}</li>`).join('');
+  const origin = f.parent >= 0 ? ` · broke from ${fn(factions[f.parent])}` : '';
+  card.innerHTML = `<button class="x" title="Stop following" id="unfollow">×</button>
+    <h3 style="color:${dark(f)}">${f.alive ? fullName(f).replace(/^the/, 'The') : f.name + ' <i>(fallen)</i>'}</h3>
+    <dl>
+      <dt>Founded</dt><dd>Year ${f.founded}${origin}</dd>
+      ${f.alive ? `<dt>Provinces</dt><dd>${f.size} <span style="color:var(--muted)">(peak ${f.peak} in Y.${f.peakYear})</span></dd>
+      <dt>Ruler</dt><dd>${rulerName(r)}, ${Math.floor(r.age)}, ${abilityWord(r.ability)}</dd>
+      <dt>Temper</dt><dd>${traitWords(f.traits)}</dd>
+      <dt>Allies</dt><dd>${allies.join(', ') || '—'}</dd>
+      <dt>At war</dt><dd>${foes.join(', ') || '—'}</dd>
+      ${f.plague > 0 ? '<dt>Afflicted</dt><dd>by plague</dd>' : ''}` :
+      `<dt>Fell</dt><dd>Year ${f.fell}, after reaching ${f.peak} provinces</dd>`}
+    </dl>
+    ${past ? `<div class="hint" style="margin:6px 0 0">Past rulers</div><ul>${past}</ul>` : ''}
+    ${deeds ? `<div class="hint" style="margin:6px 0 0">Recent deeds</div><ul>${deeds}</ul>` : ''}`;
+  document.getElementById('unfollow').onclick = () => { follow = null; renderCard(); };
+}
+function renderTimeline() {
+  const el = document.getElementById('timeline'); if (!eras) return;
+  const now = year();
+  el.innerHTML = '';
+  eras.forEach((e, k) => {
+    const end = k + 1 < eras.length ? eras[k + 1].start : now;
+    const d = document.createElement('div');
+    d.className = 'seg' + (k === eras.length - 1 ? ' now' : '') + (viewEra === e ? ' on' : '');
+    d.style.flex = `${Math.max(1, end - e.start)} 1 0`;
+    d.textContent = e.name; d.title = `${e.name} — Year ${e.start}${k + 1 < eras.length ? '–' + end : ' to now'}`;
+    d.onclick = () => showEra(k === eras.length - 1 ? null : e);
+    el.appendChild(d);
   });
-  for (let i = 0; i < 120; i++) food.push({ x: rand(0, W), y: rand(0, H) });
-  log('Six dynasties wake up.');
 }
-
-cv.addEventListener('click', e => {
-  const r = cv.getBoundingClientRect();
-  for (let i = 0; i < 25; i++) food.push({ x: e.clientX - r.left + rand(-30, 30), y: e.clientY - r.top + rand(-30, 30) });
+function showEra(e) {
+  viewEra = e; ovDirty = true;
+  const b = document.getElementById('banner');
+  if (e) {
+    renderWash(snapWashC, e.snap.owner, id => e.snap.info.get(id)?.color || '#999999');
+    snapLabels = computeLabels(e.snap.owner, id => { const i = e.snap.info.get(id); return i && { id, ...i }; });
+    b.hidden = false; b.textContent = `The map as it stood at the dawn of ${e.name.replace(/^The /, 'the ')}, Year ${e.start}. Click here to return to the present.`;
+  } else b.hidden = true;
+  renderTimeline();
+}
+document.getElementById('banner').onclick = () => showEra(null);
+chronEl.addEventListener('click', ev => { const a = ev.target.closest('a.fn'); if (a) { follow = +a.dataset.f; renderCard(); } });
+document.getElementById('card').addEventListener('click', ev => { const a = ev.target.closest('a.fn'); if (a) { follow = +a.dataset.f; renderCard(); } });
+cv.addEventListener('click', ev => {
+  const rc = cv.getBoundingClientRect(), wx = (ev.clientX - rc.left - ox) / scale, wy = (ev.clientY - rc.top - oy) / scale;
+  let best = null, bd = HR * HR * 1.2;
+  for (const h of land) { const d = (h.x - wx) ** 2 + (h.y - wy) ** 2; if (d < bd) { bd = d; best = h; } }
+  const own = viewEra ? viewEra.snap.owner : owner;
+  follow = best && own[best.i] >= 0 ? own[best.i] : null;
+  renderCard();
 });
 
-function step() {
-  tick++;
-  // Food regrows; scarcity cycles slowly so the environment keeps shifting.
-  const season = 0.5 + 0.5 * Math.sin(tick / 1800);
-  if (Math.random() < 0.6 * season + 0.1 && food.length < 400) food.push({ x: rand(0, W), y: rand(0, H) });
+// ---------- controls & loop ----------
+let needDraw = true, paused = false, speed = 1, last = performance.now(), acc = 0, lastWash = -1e9, lastUI = 0;
+document.getElementById('pause').onclick = e => { paused = !paused; e.target.textContent = paused ? 'Resume' : 'Pause'; };
+document.getElementById('speed').onchange = e => { speed = +e.target.value; };
+document.getElementById('newworld').onclick = () => newWorld((Math.random() * 2 ** 31) | 0);
 
-  for (const c of creatures) {
-    const r = 3 + c.g.size * 3, sense = 40 + c.g.sense * 50;
-    let tx = 0, ty = 0, best = Infinity, flee = false;
-    for (const f of food) {
-      const d = Math.hypot(f.x - c.x, f.y - c.y);
-      if (d < sense && d < best) { best = d; tx = f.x - c.x; ty = f.y - c.y; }
-    }
-    for (const o of creatures) {
-      if (o === c || o.dynasty === c.dynasty) continue;
-      const d = Math.hypot(o.x - c.x, o.y - c.y);
-      if (d > sense) continue;
-      if (o.g.size > c.g.size * 1.2 && o.g.aggro > 0.4) { tx = c.x - o.x; ty = c.y - o.y; flee = true; best = 0; }
-      else if (!flee && c.g.aggro > 0.5 && c.g.size > o.g.size * 1.2 && d < best * 1.5) { tx = o.x - c.x; ty = o.y - c.y; best = d; }
-    }
-    if (best === Infinity) { tx = Math.cos(c.id + tick / 90); ty = Math.sin(c.id * 1.7 + tick / 70); }
-    const len = Math.hypot(tx, ty) || 1, sp = c.g.speed * 1.4;
-    c.vx = c.vx * 0.85 + (tx / len) * sp * 0.15;
-    c.vy = c.vy * 0.85 + (ty / len) * sp * 0.15;
-    c.x = (c.x + c.vx + W) % W; c.y = (c.y + c.vy + H) % H;
-    // Metabolism: big, fast, perceptive bodies are expensive.
-    c.energy -= 0.04 + 0.02 * c.g.speed ** 2 * c.g.size + 0.01 * c.g.sense;
-    c.age++;
-    for (let i = food.length - 1; i >= 0; i--) {
-      if (Math.hypot(food[i].x - c.x, food[i].y - c.y) < r + 2) { food.splice(i, 1); c.energy += 18; }
-    }
-    for (const o of creatures) {
-      if (o.dead || o === c || o.dynasty === c.dynasty || c.g.aggro < 0.5) continue;
-      if (c.g.size > o.g.size * 1.2 && Math.hypot(o.x - c.x, o.y - c.y) < r) { o.dead = true; c.energy += o.energy * 0.6 + 10; }
-    }
-    if (c.energy <= 0 || c.age > 4000) c.dead = true;
+function frame(now) {
+  const dt = Math.min(now - last, 250); last = now;
+  if (!paused) {
+    acc += dt * TPS * speed / 1000;
+    let n = 0; while (acc >= 1 && n < 100) { simTick(); acc--; n++; }
+    if (acc > 4) acc = 0;
+    if (n) needDraw = true;
   }
-
-  const born = [];
-  for (const c of creatures) {
-    if (!c.dead && c.energy > 110) {
-      c.energy -= 55;
-      born.push(makeCreature(mutate(c.g), c.x + rand(-5, 5), c.y + rand(-5, 5), c.dynasty, c.gen + 1));
-    }
+  if (dirty && now - lastWash > 350) {
+    renderWash(washC, owner, id => factions[id].color);
+    labels = computeLabels(owner, liveInfo);
+    lastWash = now; dirty = false; ovDirty = true;
   }
-  creatures = creatures.filter(c => !c.dead).concat(born);
-  if (creatures.length > 500) creatures.sort((a, b) => b.energy - a.energy).length = 500;
-
-  // Bookkeeping for the story.
-  const counts = founders.map(() => 0);
-  for (const c of creatures) { counts[c.dynasty]++; founders[c.dynasty].maxGen = Math.max(founders[c.dynasty].maxGen, c.gen); }
-  founders.forEach((f, i) => {
-    if (counts[i] > f.best * 1.5 && counts[i] >= 20) { f.best = counts[i]; log(`${f.name} swells to ${counts[i]}.`); }
-    if (counts[i] === 0 && f.extinctAt === null) { f.extinctAt = tick; log(`${f.name} is extinct.`); }
-  });
-  const alive = founders.filter(f => f.extinctAt === null);
-  if (alive.length === 1 && !founders.winnerLogged) { founders.winnerLogged = true; log(`${alive[0].name} inherits the world.`); }
-  if (creatures.length === 0) { log('Silence. A new world begins.'); setTimeout(reset, 1500); paused = true; setTimeout(() => paused = false, 1500); }
-  if (tick % 30 === 0) { history.push(counts); if (history.length > 216) history.shift(); }
+  if (needDraw || ovDirty) { draw(); needDraw = false; }
+  if (now - lastUI > 400) {
+    lastUI = now;
+    document.getElementById('yr').textContent = `Year ${year()}`;
+    if (follow != null) renderCard();
+    const segs = document.getElementById('timeline').children;
+    if (segs.length) { const k = segs.length - 1; segs[k].style.flex = `${Math.max(1, year() - eras[k].start)} 1 0`; }
+  }
+  requestAnimationFrame(frame);
 }
 
-function draw() {
-  ctx.fillStyle = '#0e1116'; ctx.fillRect(0, 0, W, H);
-  ctx.fillStyle = '#3fb95066';
-  for (const f of food) ctx.fillRect(f.x - 1.5, f.y - 1.5, 3, 3);
-  for (const c of creatures) {
-    const f = founders[c.dynasty], r = 3 + c.g.size * 3;
-    ctx.beginPath(); ctx.arc(c.x, c.y, r, 0, 7);
-    ctx.fillStyle = `hsl(${f.hue} ${50 + c.g.aggro * 45}% ${45 + clamp(c.energy, 0, 110) / 6}%)`;
-    ctx.fill();
-  }
-  // Side panel
-  document.getElementById('time').textContent = `Day ${Math.floor(tick / 600)} · ${creatures.length} alive`;
-  const counts = founders.map(() => 0), avg = founders.map(() => ({ speed: 0, size: 0, aggro: 0 }));
-  for (const c of creatures) { counts[c.dynasty]++; for (const k in avg[c.dynasty]) avg[c.dynasty][k] += c.g[k]; }
-  const order = founders.map((f, i) => i).sort((a, b) => counts[b] - counts[a]);
-  document.getElementById('board').innerHTML = order.map(i => {
-    const f = founders[i], n = counts[i];
-    const traits = n ? ` <span style="color:var(--muted)">spd ${(avg[i].speed / n).toFixed(1)} size ${(avg[i].size / n).toFixed(1)} ${avg[i].aggro / n > 0.5 ? 'hunter' : 'grazer'}</span>` : ' <span style="color:var(--muted)">extinct</span>';
-    return `<div class="row"><span class="sw" style="background:hsl(${f.hue} 70% 55%)"></span><b>${f.name}</b> ${n} · g${f.maxGen}</div><div class="row" style="font-size:11px;margin-left:16px">${traits}</div>`;
-  }).join('');
-  gctx.clearRect(0, 0, gcv.width, gcv.height);
-  const max = Math.max(10, ...history.flat());
-  founders.forEach((f, i) => {
-    gctx.strokeStyle = `hsl(${f.hue} 70% 55%)`; gctx.beginPath();
-    history.forEach((h, x) => { const y = gcv.height - (h[i] / max) * gcv.height; x ? gctx.lineTo(x, y) : gctx.moveTo(x, y); });
-    gctx.stroke();
-  });
-}
+// test hook: run the simulation headless for n years
+window.__sim = {
+  years(n) { for (let k = 0; k < n * 12; k++) simTick(); dirty = true; return this.stats(); },
+  stats() {
+    const al = aliveList(), top = al.reduce((a, b) => (b.size > (a?.size ?? -1) ? b : a), null);
+    return { year: year(), alive: al.length, wars: wars.length, topShare: top ? +(top.size / landCount).toFixed(2) : 0,
+      top: top && top.name, wild: land.filter(h => owner[h.i] < 0).length, events: chron.length, landCount, eras: eras.map(e => `${e.start}:${e.name}`), founded: factions.length };
+  },
+};
 
-function loop() {
-  if (!paused) for (let i = 0; i < speed; i++) step();
-  draw();
-  requestAnimationFrame(loop);
-}
-document.getElementById('pause').onclick = e => { paused = !paused; e.target.textContent = paused ? 'Play' : 'Pause'; };
-document.getElementById('speed').onclick = e => { speed = speed >= 8 ? 1 : speed * 2; e.target.textContent = `Speed ${speed}×`; };
-document.getElementById('reset').onclick = reset;
-reset(); loop();
+(async () => {
+  try { await Promise.race([Promise.all([document.fonts.load('20px "IM Fell English"'), document.fonts.load('20px "IM Fell English SC"')]), new Promise(r => setTimeout(r, 2500))]); } catch (e) {}
+  const q = +new URL(location.href).searchParams.get('seed');
+  newWorld(q || (Math.random() * 2 ** 31) | 0);
+  document.getElementById('loading').remove();
+  requestAnimationFrame(frame);
+})();
 </script>
 </body>
 </html>
