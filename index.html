@@ -250,7 +250,7 @@ let seed, worldName, gw, gh, F, thr, hexes, land, landCount, rivers, owner, dist
 let COLS, ROWS, X0, Y0, gOff, gHex, gW, liveFields, liveBorders, snapFields, snapBorders;
 let factions, wars, chron, eras, ruins, notes, tick, collapse, lastWarYear;
 let paperC, inkC, washC, washTmp, landBig, snapWashC, labels, snapLabels;
-let dirty = true, ovDirty = true, follow = null, viewEra = null, ovC;
+let labelBoxes = [], dirty = true, ovDirty = true, follow = null, viewEra = null, ovC;
 
 const year = () => Math.floor(tick / 12) + 1;
 
@@ -685,7 +685,8 @@ function computeLabels(own, infoOf) {
     const ang = a.n < 4 ? 0 : clamp(.5 * Math.atan2(2 * cxy, cxx - cyy), -.45, .45);
     const lx = a.n > 6 ? (mx + best.x) / 2 : best.x, ly = a.n > 6 ? (my + best.y) / 2 : best.y;
     if (a.n < 3) continue;
-    out.push({ x: lx, y: ly, ang, size: clamp(9 + Math.sqrt(a.n) * 2.2, 10, 30), n: a.n, ...info });
+    const near = a.tiles.map(h => [(h.x - mx) ** 2 + (h.y - my) ** 2, h]).sort((p, q) => p[0] - q[0]).slice(0, 10).map(([, h]) => [h.x, h.y]);
+    out.push({ x: lx, y: ly, cands: [[lx, ly], ...near], ang, size: clamp(9 + Math.sqrt(a.n) * 2.2, 10, 30), n: a.n, ...info });
   }
   return out.sort((p, q) => q.n - p.n);
 }
@@ -1178,7 +1179,7 @@ function restoreWorld(sv) {
   owner.set(unb64(sv.owner));
   for (const [i, t] of sv.caps) hexes[i].lastCap = t;
   factions = sv.factions.map(o => ({ ...o, allies: new Set(o.allies), truce: new Map(o.truce), fronts: new Map(), wildFront: [] }));
-  wars = sv.wars; chron = sv.chron; ruins = sv.ruins; notes = sv.notes || []; collapse = sv.collapse; lastWarYear = sv.lastWarYear;
+  wars = sv.wars; chron = sv.chron; ruins = sv.ruins; notes = (sv.notes || []).map(({ q, box, ...n }) => n); collapse = sv.collapse; lastWarYear = sv.lastWarYear;
   eras = sv.eras.map(e => ({ ...e, snap: e.snap ? { owner: unb64(e.snap.owner), info: new Map(e.snap.info) } : null }));
   usedNames = new Set(sv.usedNames); usedWars = new Map(sv.usedWars);
   for (const e of chron.slice(-250)) pushChronDom(e);
@@ -1188,6 +1189,21 @@ function restoreWorld(sv) {
   computeStats();
   dirty = true; renderCard(); renderTimeline(); resize();
   setSeedUrl(sv.seed);
+}
+function showIntro(shared) {
+  const el = document.getElementById('away');
+  el.innerHTML = `<h3>A world that plays itself</h3>
+    <p>${shared ? `Someone shared the world of ${worldName} with you.` : `This is ${worldName}.`} Its realms rise, make war, betray each other
+    and fall without anyone's help, and the chronicle on the right records every reign.</p>
+    <ul>
+      <li>Click a realm, or a name in the chronicle, to follow its fortunes.</li>
+      <li>Click an age on the timeline below to see the map as it stood then.</li>
+      <li>Close the tab whenever you like. Time keeps passing, and you'll hear what happened when you return.</li>
+    </ul>
+    <button id="awayok">Begin watching</button>`;
+  el.hidden = false;
+  document.getElementById('awayok').onclick = () => { el.hidden = true; };
+  document.getElementById('awayok').focus();
 }
 function offerReturn(prev) {
   const el = document.getElementById('away'), mine = prev.worldName || 'your own world';
@@ -1266,42 +1282,93 @@ function drawOverlay(x, own, labs, live, fields, borders) {
   }
   x.setTransform(1, 0, 0, 1, 0, 0); x.globalCompositeOperation = 'destination-in'; x.drawImage(landBig, 0, 0);
   x.restore();
-  if (live) {
-    // ruins of the fallen
-    for (const r of ruins) {
-      const fade = clamp(1 - (year() - r.year) / 200, 0, 1); if (fade <= 0) continue;
-      x.globalAlpha = .7 * fade; ruin(x, r.x, r.y);
-      x.font = `italic ${clamp(8 + Math.sqrt(r.peak), 9, 14)}px "IM Fell English", Georgia, serif`; x.textAlign = 'center';
-      x.fillStyle = '#5c4a38'; x.fillText(`old ${r.name}`, r.x, r.y + 15);
+  // place names without collisions: biggest realms first; a name that would overlap tries other
+  // spots in its realm, then smaller sizes, and a small realm's name is left off rather than crowd the map
+  const boxes = [
+    { x0: CART.x - 6, y0: CART.y - 6, x1: CART.x + CART.w + 6, y1: CART.y + CART.h + 6 },
+    { x0: COMPASS.x - COMPASS.r - 6, y0: COMPASS.y - COMPASS.r - 22, x1: COMPASS.x + COMPASS.r + 6, y1: COMPASS.y + COMPASS.r + 6 },
+  ];
+  const hit = b => boxes.some(o => b.x0 < o.x1 && b.x1 > o.x0 && b.y0 < o.y1 && b.y1 > o.y0);
+  const inFrame = b => b.x0 > MARGIN && b.x1 < MW - MARGIN && b.y0 > MARGIN && b.y1 < MH - MARGIN;
+  const placed = [];
+  for (const l of labs) {
+    const ca = Math.abs(Math.cos(l.ang)), sa = Math.abs(Math.sin(l.ang)), sub = l.n >= 12;
+    const boxAt = (c, size, w) => {
+      const hgt = size * (sub ? 1.95 : 1.15), cx = c[0], cy = c[1] - (l.n > 3 ? 12 : 14) + (sub ? size * .4 : 0);
+      const hx = ca * w / 2 + sa * hgt / 2, hy = sa * w / 2 + ca * hgt / 2;
+      return { x0: cx - hx, x1: cx + hx, y0: cy - hy, y1: cy + hy };
+    };
+    let done = null;
+    for (const k of [1, .85, .72]) {
+      const size = Math.max(9, l.size * k);
+      x.font = `${size}px "IM Fell English SC", Georgia, serif`;
+      const w = x.measureText(spaced(l.name)).width + 8;
+      for (const c of l.cands) { const b = boxAt(c, size, w); if (!hit(b) && inFrame(b)) { done = { c, size, b }; break; } }
+      if (done) break;
+      if (k === .72 && l.n >= 30) done = { c: l.cands[0], size, b: boxAt(l.cands[0], size, w) };   // a great realm is always named
     }
-    x.globalAlpha = 1;
+    if (done) { boxes.push(done.b); placed.push({ l, ...done }); }
   }
   // capitals
   for (const l of labs) { const c = hexes[l.capital]; if (c && own[c.i] === l.id) castle(x, c.x, c.y, l.color); }
+  if (live) {
+    // ruins of the fallen: the broken tower always, its old name only where there is room
+    x.textAlign = 'center';
+    for (const r of ruins) {
+      const fade = clamp(1 - (year() - r.year) / 200, 0, 1); if (fade <= 0) continue;
+      x.globalAlpha = .7 * fade; ruin(x, r.x, r.y);
+      const fs = clamp(8 + Math.sqrt(r.peak), 9, 14), t = `old ${r.name}`;
+      x.font = `italic ${fs}px "IM Fell English", Georgia, serif`;
+      const w = x.measureText(t).width, b = { x0: r.x - w / 2 - 2, x1: r.x + w / 2 + 2, y0: r.y + 15 - fs * .8, y1: r.y + 15 + fs * .3 };
+      if (hit(b)) continue;
+      boxes.push(b); x.fillStyle = '#5c4a38'; x.fillText(t, r.x, r.y + 15);
+    }
+    x.globalAlpha = 1;
+    labelBoxes = boxes;
+  }
   // names
   x.textAlign = 'center'; x.textBaseline = 'middle';
-  for (const l of labs) {
-    x.save(); x.translate(l.x, l.y - (l.n > 3 ? 12 : 14)); x.rotate(l.ang);
-    x.font = `${l.size}px "IM Fell English SC", Georgia, serif`;
+  for (const { l, c, size } of placed) {
+    x.save(); x.translate(c[0], c[1] - (l.n > 3 ? 12 : 14)); x.rotate(l.ang);
+    x.font = `${size}px "IM Fell English SC", Georgia, serif`;
     const txt = spaced(l.name);
     x.lineWidth = 3.2; x.strokeStyle = 'rgba(234,219,182,.75)'; x.strokeText(txt, 0, 0);
     x.fillStyle = mix(l.color, '#20150c', .55); x.fillText(txt, 0, 0);
     if (l.n >= 12) {
-      x.font = `italic ${Math.max(10, l.size * .45)}px "IM Fell English", Georgia, serif`;
-      x.strokeText(l.sub, 0, l.size * .72); x.fillText(l.sub, 0, l.size * .72);
+      x.font = `italic ${Math.max(10, size * .45)}px "IM Fell English", Georgia, serif`;
+      x.strokeText(l.sub, 0, size * .72); x.fillText(l.sub, 0, size * .72);
     }
     x.restore();
   }
   x.textBaseline = 'alphabetic';
 }
 // per-frame marks: fresh conquests and the swords on each front
+const noteAnchor = (n, q) => { const left = q & 1, up = q & 2, far = q & 4; return [n.x + (left ? -1 : 1) * (far ? 34 : 16), n.y + (up ? -1 : 1) * (far ? 56 : 24) + (up ? 0 : 2)]; };
+function noteBox(n, q, w) {
+  const left = q & 1, [ax, ty] = noteAnchor(n, q), tx = ax + (left ? -4 : 4);
+  return left ? { x0: tx - w, x1: tx, y0: ty - 12, y1: ty + 24 } : { x0: tx, x1: tx + w, y0: ty - 12, y1: ty + 24 };
+}
+function noteCorner(x, n) {
+  x.font = 'italic 18px "IM Fell English", Georgia, serif';
+  const w = x.measureText(n.text).width + 8, others = notes.filter(o => o !== n && o.q != null).map(o => o.box);
+  let best = 0, bs = Infinity;
+  for (let q = 0; q < 8; q++) {
+    const b = noteBox(n, q, w);
+    let sc = (b.x0 < MARGIN || b.x1 > MW - MARGIN || b.y0 < MARGIN || b.y1 > MH - MARGIN) ? 1e7 : 0;
+    for (const o of [...labelBoxes, ...others]) sc += Math.max(0, Math.min(b.x1, o.x1) - Math.max(b.x0, o.x0)) * Math.max(0, Math.min(b.y1, o.y1) - Math.max(b.y0, o.y0));
+    sc += q & 4 ? 200 : 0;          // prefer staying close to the mark
+    if (sc < bs) { bs = sc; best = q; }
+  }
+  n.box = noteBox(n, best, w);
+  return best;
+}
 function drawNotes(x) {
   x.save();
   for (const n of notes) {
     const age = tick - n.t; if (age >= NOTE_LIFE) continue;
     x.globalAlpha = Math.min(1, (age + 1) / 4) * Math.min(1, (NOTE_LIFE - age) / 50);
-    const left = n.x > MW - 330, up = n.y > 140;
-    const tx = n.x + (left ? -16 : 16), ty = n.y + (up ? -22 : 26);
+    if (n.q == null) { if (dirty) continue; n.q = noteCorner(x, n); }   // wait until the names are placed for this map
+    const left = n.q & 1, [tx, ty] = noteAnchor(n, n.q);
     x.strokeStyle = '#5a2418'; x.lineWidth = 1.1;
     x.beginPath(); x.moveTo(n.x, n.y); x.quadraticCurveTo(n.x + (left ? -4 : 4), ty, tx, ty); x.stroke();
     x.beginPath(); for (let k = 0; k < 3; k++) { const a = k * Math.PI / 3; x.moveTo(n.x - 4 * Math.cos(a), n.y - 4 * Math.sin(a)); x.lineTo(n.x + 4 * Math.cos(a), n.y + 4 * Math.sin(a)); } x.stroke();
@@ -1556,6 +1623,7 @@ window.__sim = {
     if (sv && q && q !== sv.seed) { try { localStorage.setItem(PREV_KEY, JSON.stringify(sv)); } catch (e) {} }
     newWorld(q || (Math.random() * 2 ** 31) | 0);
     if (sv && q && q !== sv.seed) offerReturn(sv);
+    else if (!sv) showIntro(!!q);
   }
   document.getElementById('loading').remove();
   requestAnimationFrame(frame);
