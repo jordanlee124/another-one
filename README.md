@@ -4,7 +4,7 @@ A history that writes itself. Realms rise, wage war, swear pacts, betray their a
 
 There is no player. You watch, follow a realm you care about, and come back later to find out what happened.
 
-![The map in year 288, following the Empire of Morenoth](docs/map.jpg)
+![The map in year 262: twin lands across a strait, following the Empire of Veloresh](docs/map.jpg)
 
 ## Running it
 
@@ -17,9 +17,11 @@ Open `index.html` in a browser. There is no build step and nothing to install. T
 
 ## What it does
 
+**No two worlds share a shape.** Each seed picks a kind of world: a single continent, twin lands divided by a winding strait, a continent wrapped around an inland sea, or an archipelago. Mountains follow ridgelines, so they form ranges instead of blobs. Every sea, lake, mountain range, great forest and desert gets a name. Short dotted sea lanes link separate landmasses, so island realms can be reached and conquered. Ships and the occasional sea serpent fill the open water.
+
 **The map is drawn, not tiled.** Each world is generated from a seed. Fractal noise makes the terrain. The coastline and the offshore ripple lines are traced from the height map with marching squares. Mountains, hills, forests and dunes are drawn as ink symbols, and rivers run downhill to the sea. Each realm's territory is a smooth field rather than a set of hexes: its watercolour wash and its dash-dot border are contours of that field, so borders curve the way a cartographer would draw them.
 
-![Detail: watercolour washes, ink borders, a note marking the breaking of an empire](docs/detail.jpg)
+![Detail: watercolour washes, ink borders, a named forest, a ship and a note marking a pretender's rising](docs/detail.jpg)
 
 **The simulation resists stagnation.** Most self-running strategy simulations settle into one empire covering the map within minutes. Here, power falls off sharply as a realm grows. Provinces far from the capital grow restless and revolt, more often in any realm holding over 30% of the land. Successions can split a realm in two, rivals form coalitions against whoever is largest, and plague and hordes hit the biggest realms hardest. Small realms bend the knee to large neighbours, so the map holds around 10 to 20 realms at a time. Across test runs of 600 years, the largest realm peaked at 30% to 40% of the land and then broke apart.
 
