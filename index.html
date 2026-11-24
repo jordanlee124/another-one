@@ -31,6 +31,10 @@
     border: 1px solid #5a4632; border-radius: 3px; padding: 3px 10px; cursor: pointer;
   }
   button:hover, select:hover { border-color: var(--gold); }
+  button:focus-visible, select:focus-visible { outline: 2px solid var(--gold); outline-offset: 1px; }
+  .confirm { display: inline-flex; gap: 8px; align-items: center; flex-wrap: wrap; font-style: italic; color: #e9dcb8; }
+  .confirm[hidden] { display: none; }
+  button.danger { background: var(--blood); border-color: #c45a48; }
   main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; min-height: 0; }
   #mapwrap { position: relative; min-width: 0; min-height: 0; }
   #map { position: absolute; inset: 0; width: 100%; height: 100%; cursor: pointer; display: block; }
@@ -110,6 +114,11 @@
       <option value="4">4×</option><option value="8">8×</option><option value="16">16×</option>
     </select>
     <button id="newworld">New world</button>
+    <span id="confirmnew" class="confirm" hidden>
+      <span id="confirmtext">Erase this world?</span>
+      <button id="erase" class="danger">Erase and begin anew</button>
+      <button id="keep">Keep it</button>
+    </span>
   </div>
 </header>
 <main>
@@ -1168,8 +1177,15 @@ function catchUp(ms) {
   const yrs = year() - y0; if (yrs < 1) return;
   const fresh = chron.slice(c0), fell = [...alive0].filter(id => !factions[id].alive).length;
   const rose = factions.slice(f0).filter(f => f.alive).length;
-  const picks = fresh.filter(e => e.cls === 'era' || e.cls === 'big');
-  const lines = (picks.length >= 3 ? picks : fresh).slice(-7);
+  // headline the events that change the shape of the world, then show them in order
+  const RANK = [[/last banner/, 90], [/power of .* is broken/, 85], [/edge of the map/, 70], [/sacks the capital/, 60],
+    [/breaks its oaths/, 55], [/dead are carted out/, 50], [/succession in .* is disputed/, 35], [/rise in revolt/, 30], [/bends the knee/, 25]];
+  const score = e => e.cls === 'era' ? 100 : (RANK.find(([re]) => re.test(e.text)) || [0, e.cls === 'big' ? 20 : 5])[1];
+  let disputes = 0;
+  const lines = fresh.map((e, i) => ({ e, i, s: score(e) }))
+    .sort((a, b) => b.s - a.s || b.i - a.i)
+    .filter(({ s }) => s !== 35 || ++disputes <= 2)
+    .slice(0, 7).sort((a, b) => a.i - b.i).map(({ e }) => e);
   const capped = ms / 1000 * TPS > MAX_CATCHUP_YEARS * 12;
   const el = document.getElementById('away');
   el.innerHTML = `<h3>While you were away</h3>
@@ -1425,7 +1441,18 @@ cv.addEventListener('click', ev => {
 let needDraw = true, paused = false, speed = 1, last = performance.now(), acc = 0, lastWash = -1e9, lastUI = 0;
 document.getElementById('pause').onclick = e => { paused = !paused; e.target.textContent = paused ? 'Resume' : 'Pause'; saveWorld(); };
 document.getElementById('speed').onchange = e => { speed = +e.target.value; saveWorld(); };
-document.getElementById('newworld').onclick = () => { document.getElementById('away').hidden = true; newWorld((Math.random() * 2 ** 31) | 0); };
+// starting over erases the saved world, so ask first
+const newBtn = document.getElementById('newworld'), confirmBox = document.getElementById('confirmnew');
+newBtn.onclick = () => {
+  const yrs = year() - 1;
+  document.getElementById('confirmtext').textContent = yrs >= 1 ? `Erase ${yrs} year${yrs === 1 ? '' : 's'} of ${worldName}?` : `Replace ${worldName}?`;
+  newBtn.hidden = true; confirmBox.hidden = false; document.getElementById('keep').focus();
+};
+document.getElementById('keep').onclick = () => { confirmBox.hidden = true; newBtn.hidden = false; newBtn.focus(); };
+document.getElementById('erase').onclick = () => {
+  confirmBox.hidden = true; newBtn.hidden = false;
+  document.getElementById('away').hidden = true; newWorld((Math.random() * 2 ** 31) | 0);
+};
 // save every few seconds and whenever the page is hidden; replay hidden time on return
 let hiddenAt = null;
 setInterval(saveWorld, 5000);
