@@ -55,6 +55,15 @@
   #away .y { color: var(--muted); font-family: "IM Fell English SC", Georgia, serif; }
   #away .era-li { color: var(--blood); font-style: italic; }
   #away button { background: var(--ink); color: var(--paper); }
+  #sharebox {
+    position: absolute; right: 12px; top: 12px; width: min(380px, calc(100% - 24px)); background: var(--paper);
+    border: 1px solid var(--ink); box-shadow: 0 4px 16px rgba(0,0,0,.5); padding: 12px 14px; z-index: 3; font-size: 14px;
+  }
+  #sharebox input { width: 100%; margin: 8px 0; font: 13px ui-monospace, Menlo, monospace; padding: 4px 6px; border: 1px solid var(--muted); background: #fffaf0; color: var(--ink); }
+  #sharebox .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  #sharestatus { color: var(--muted); font-style: italic; }
+  #sharebox button, #away .alt { background: var(--paper-2); color: var(--ink); border-color: var(--muted); }
+  #away .btns { display: flex; gap: 8px; flex-wrap: wrap; }
   #loading { position: absolute; inset: 0; display: grid; place-items: center; color: #e9dcb8; font-style: italic; }
   aside {
     background: var(--paper); border-left: 2px solid #120c08; overflow-y: auto; padding: 12px 16px 24px;
@@ -113,6 +122,7 @@
       <option value="0.5">½×</option><option value="1" selected>1×</option><option value="2">2×</option>
       <option value="4">4×</option><option value="8">8×</option><option value="16">16×</option>
     </select>
+    <button id="share">Share world</button>
     <button id="newworld">New world</button>
     <span id="confirmnew" class="confirm" hidden>
       <span id="confirmtext">Erase this world?</span>
@@ -127,6 +137,11 @@
     <div id="loading">The cartographer sharpens a quill…</div>
     <div id="banner" hidden></div>
     <div id="away" hidden></div>
+    <div id="sharebox" hidden>
+      <label for="shareurl">Anyone with this link sees <span id="sharename"></span> from its founding.</label>
+      <input id="shareurl" readonly>
+      <div class="row"><span id="sharestatus" role="status"></span><button id="shareclose">Close</button></div>
+    </div>
   </div>
   <aside>
     <div id="card" hidden></div>
@@ -1092,9 +1107,14 @@ function initWorld(s) {
   renderLandMask(); renderPaper(); renderInk(); buildGridWeights();
   ovC = mk(MW * OS, MH * OS); washC = mk(MW * OS, MH * OS); washTmp = mk(MW * OS, MH * OS); snapWashC = mk(MW * OS, MH * OS);
 }
+// a link that opens this same world, from its founding, for whoever receives it
+function shareUrl() {
+  const u = new URL(location.href); u.search = ''; u.hash = ''; u.searchParams.set('seed', seed); return u.href;
+}
 function setSeedUrl(s) {
   try { const u = new URL(location.href); u.searchParams.set('seed', s); history.replaceState(null, '', u); } catch (e) {}
 }
+const PRESIM_YEARS = 40;
 function newWorld(s) {
   initWorld(s);
   // seven founding peoples, spread apart
@@ -1112,6 +1132,8 @@ function newWorld(s) {
   }
   startEra('The Age of Founding', 'found');
   computeStats();
+  // the founding decades are slow to watch, so a new world opens with them already written
+  for (let k = 0; k < PRESIM_YEARS * 12; k++) simTick();
   dirty = true; renderCard(); renderTimeline(); resize();
   setSeedUrl(s);
   saveWorld();
@@ -1120,13 +1142,13 @@ function newWorld(s) {
 // ---------- saving & resuming ----------
 // The world lives in this browser's storage. Terrain is rebuilt from the seed; everything
 // that happened since is saved, and time that passed while the page was closed is replayed.
-const SAVE_KEY = 'ledger-of-crowns-v1', MAX_CATCHUP_YEARS = 200;
+const SAVE_KEY = 'ledger-of-crowns-v1', PREV_KEY = 'ledger-of-crowns-v1-set-aside', MAX_CATCHUP_YEARS = 200;
 const b64 = a => { const u = new Uint8Array(a.buffer, a.byteOffset, a.byteLength); let str = ''; for (let i = 0; i < u.length; i += 0x8000) str += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(str); };
 const unb64 = str => { const bin = atob(str), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return new Int16Array(u.buffer); };
 function packWorld(maxSnaps) {
   const now = year();
   return {
-    v: 1, seed, rs, tick, savedAt: Date.now(), paused, speed, follow,
+    v: 1, seed, rs, tick, savedAt: Date.now(), paused, speed, follow, worldName,
     owner: b64(owner), caps: land.filter(h => tick - h.lastCap < 36).map(h => [h.i, h.lastCap]),
     factions: factions.map(f => {
       const { fronts, wildFront, allies, truce, log, rulers, ...rest } = f;
@@ -1166,6 +1188,20 @@ function restoreWorld(sv) {
   computeStats();
   dirty = true; renderCard(); renderTimeline(); resize();
   setSeedUrl(sv.seed);
+}
+function offerReturn(prev) {
+  const el = document.getElementById('away'), mine = prev.worldName || 'your own world';
+  el.innerHTML = `<h3>A shared world</h3>
+    <p>You are watching ${worldName}, from a link someone shared. Your own world, ${mine}, is set aside and still keeping time.</p>
+    <div class="btns"><button id="awayok">Watch ${worldName}</button><button id="goback" class="alt">Return to ${mine}</button></div>`;
+  el.hidden = false;
+  document.getElementById('awayok').onclick = () => { el.hidden = true; };
+  document.getElementById('goback').onclick = () => {
+    let p = null; try { p = JSON.parse(localStorage.getItem(PREV_KEY)); } catch (e) {}
+    el.hidden = true; if (!p) return;
+    try { localStorage.removeItem(PREV_KEY); } catch (e) {}
+    restoreWorld(p); saveWorld(); catchUp(Date.now() - p.savedAt);
+  };
 }
 // replay the years that passed while nobody was watching, then say what happened
 function catchUp(ms) {
@@ -1441,6 +1477,15 @@ cv.addEventListener('click', ev => {
 let needDraw = true, paused = false, speed = 1, last = performance.now(), acc = 0, lastWash = -1e9, lastUI = 0;
 document.getElementById('pause').onclick = e => { paused = !paused; e.target.textContent = paused ? 'Resume' : 'Pause'; saveWorld(); };
 document.getElementById('speed').onchange = e => { speed = +e.target.value; saveWorld(); };
+document.getElementById('share').onclick = () => {
+  const box = document.getElementById('sharebox'), input = document.getElementById('shareurl'), st = document.getElementById('sharestatus');
+  input.value = shareUrl(); document.getElementById('sharename').textContent = worldName; st.textContent = '';
+  box.hidden = false; input.focus(); input.select();
+  try {
+    navigator.clipboard.writeText(input.value).then(() => { st.textContent = 'Link copied.'; }, () => { st.textContent = 'Press Ctrl+C or ⌘C to copy.'; });
+  } catch (e) { st.textContent = 'Press Ctrl+C or ⌘C to copy.'; }
+};
+document.getElementById('shareclose').onclick = () => { document.getElementById('sharebox').hidden = true; };
 // starting over erases the saved world, so ask first
 const newBtn = document.getElementById('newworld'), confirmBox = document.getElementById('confirmnew');
 newBtn.onclick = () => {
@@ -1507,7 +1552,11 @@ window.__sim = {
     try { restoreWorld(sv); resumed = true; } catch (e) { console.warn('Could not resume the saved world', e); }
   }
   if (resumed) catchUp(Date.now() - sv.savedAt);
-  else newWorld(q || (Math.random() * 2 ** 31) | 0);
+  else {
+    if (sv && q && q !== sv.seed) { try { localStorage.setItem(PREV_KEY, JSON.stringify(sv)); } catch (e) {} }
+    newWorld(q || (Math.random() * 2 ** 31) | 0);
+    if (sv && q && q !== sv.seed) offerReturn(sv);
+  }
   document.getElementById('loading').remove();
   requestAnimationFrame(frame);
 })();
