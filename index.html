@@ -2216,6 +2216,44 @@ function houseShape(path, px, py, p, k) {
   const pts = [[-w, -hh], [w, -hh], [w, hh], [-w, hh]].map(([u, v]) => [px + u * c - v * sn, py + u * sn + v * c]);
   path.moveTo(pts[0][0], pts[0][1]); for (let i = 1; i < 4; i++) path.lineTo(pts[i][0], pts[i][1]); path.closePath();
 }
+// roof colours: each town builds in its own materials (tile, slate, thatch, brick)
+const ROOF_SETS = [['#8f4c33', '#a85f40', '#b8714d'], ['#5d636d', '#737984', '#888e98'], ['#94703f', '#a9824c', '#bb955c'], ['#7a4634', '#925640', '#a5684c']];
+function houseOutline(path, px, py, p) {
+  const hw = p.w * .62, wh = hw * 1.05, rh = hw * .95;
+  path.moveTo(px - hw, py); path.lineTo(px - hw, py - wh); path.lineTo(px, py - wh - rh); path.lineTo(px + hw, py - wh); path.lineTo(px + hw, py); path.closePath();
+}
+function gable(x, px, py, hw, wh, rh, roof) {
+  x.fillStyle = '#efe3c4'; x.beginPath(); x.rect(px - hw, py - wh, hw * 2, wh); x.fill(); x.stroke();
+  x.fillStyle = roof; x.beginPath(); x.moveTo(px - hw - .35, py - wh); x.lineTo(px, py - wh - rh); x.lineTo(px + hw + .35, py - wh); x.closePath(); x.fill(); x.stroke();
+}
+function building(x, kind, px, py, p, roof, dome, detail) {
+  let hw = p.w * .62, wh = hw * 1.05, rh = hw * .95;
+  x.strokeStyle = INK; x.lineWidth = .45;
+  if (kind === 'long') { hw *= 1.45; rh *= .72; }
+  if (kind === 'tower') { hw *= .6; wh *= 2.5; rh *= 1.6; }
+  if (kind === 'temple' || kind === 'palace') { hw *= 1.55; wh *= 1.5; }
+  if (kind === 'palace') { gable(x, px - hw - 1.2, py, hw * .45, wh * 1.6, rh * 1.4, roof); gable(x, px + hw + 1.2, py, hw * .45, wh * 1.6, rh * 1.4, roof); }
+  if (kind === 'temple' && dome) {
+    x.fillStyle = '#efe3c4'; x.beginPath(); x.rect(px - hw, py - wh, hw * 2, wh); x.fill(); x.stroke();
+    x.fillStyle = roof; x.beginPath(); x.arc(px, py - wh, hw * .85, Math.PI, 0); x.closePath(); x.fill(); x.stroke();
+    x.beginPath(); x.moveTo(px, py - wh - hw * .85); x.lineTo(px, py - wh - hw * .85 - 2); x.stroke();
+  } else {
+    gable(x, px, py, hw, wh, rh, roof);
+    if (kind === 'temple') {        // a spire rising from the roof
+      x.fillStyle = roof; x.beginPath(); x.moveTo(px - hw * .28, py - wh - rh * .5); x.lineTo(px, py - wh - rh * 2.8); x.lineTo(px + hw * .28, py - wh - rh * .5); x.closePath(); x.fill(); x.stroke();
+    }
+  }
+  if (detail) {
+    x.fillStyle = INK;
+    if (kind !== 'tower') x.fillRect(px - hw * .16, py - wh * .5, hw * .32, wh * .5);
+    if (kind === 'temple' || kind === 'palace' || kind === 'tower') { x.beginPath(); x.arc(px, py - wh * (kind === 'tower' ? .7 : .78), Math.max(.3, hw * .12), 0, 7); x.fill(); }
+  }
+}
+function wallTower(x, px, py) {
+  x.strokeStyle = INK; x.lineWidth = .5; x.fillStyle = '#e6d5a8';
+  x.beginPath(); x.rect(px - 1.4, py - 4, 2.8, 4.5); x.fill(); x.stroke();
+  x.fillStyle = '#7a5a44'; x.beginPath(); x.moveTo(px - 1.8, py - 4); x.lineTo(px, py - 6.8); x.lineTo(px + 1.8, py - 4); x.closePath(); x.fill(); x.stroke();
+}
 function drawSettlement(x, t, arms) {
   const h = hexes[t.i], plots = plotsFor(t);
   const n = Math.min(plots.length, builtCount(t.pop)), peakN = Math.min(plots.length, builtCount(t.peak || t.pop));
@@ -2233,23 +2271,43 @@ function drawSettlement(x, t, arms) {
     }
     x.stroke();
   }
-  // districts abandoned since the town's height: empty outlines
+  // districts abandoned since the town's height: the dotted outlines of empty houses
   if (peakN > n) {
     const ghost = new Path2D();
-    for (let k = n; k < peakN; k++) if (onLand(pos[k][0], pos[k][1])) houseShape(ghost, pos[k][0], pos[k][1], plots[k], .75);
+    for (let k = n; k < peakN; k++) if (onLand(pos[k][0], pos[k][1])) houseOutline(ghost, pos[k][0], pos[k][1], plots[k]);
     x.setLineDash([.6, 1.2]); x.strokeStyle = 'rgba(90,70,50,.55)'; x.lineWidth = .4; x.stroke(ghost); x.setLineDash([]);
   }
-  // the buildings themselves: an old, dense core and newer outskirts
-  const core = new Path2D(), outer = new Path2D(), coreN = t.pop >= TOWN ? Math.round(n * .3) : 0;
-  for (let k = 0; k < n; k++) if (onLand(pos[k][0], pos[k][1])) houseShape(k < coreN ? core : outer, pos[k][0], pos[k][1], plots[k], .75);
-  x.fillStyle = '#b59565'; x.fill(core); x.fillStyle = '#ecdcb2'; x.fill(outer);
-  x.strokeStyle = INK; x.lineWidth = .5; x.stroke(core); x.stroke(outer);
-  // a city raises walls around the plots it held when it became one; later growth spills outside them
+  // a city raises walls, with battlements and towers, around the plots it held when it became one;
+  // later growth spills outside them
   if (t.pop >= CITY) {
-    const wr = plots[Math.min(builtCount(CITY), plots.length) - 1].r + 2.5;
-    x.strokeStyle = 'rgba(58,43,28,.8)'; x.lineWidth = .9; x.beginPath(); x.ellipse(h.x, h.y, wr, wr * .85, 0, 0, 7); x.stroke();
-    x.fillStyle = INK;
-    for (let k = 0; k < 7; k++) { const a = k / 7 * Math.PI * 2; x.fillRect(h.x + Math.cos(a) * wr - 1, h.y + Math.sin(a) * wr * .85 - 1, 2, 2); }
+    const wr = plots[Math.min(builtCount(CITY), plots.length) - 1].r + 3, ry = wr * .85;
+    // the wall runs only over land: a harbour city is open to the sea
+    const N = 72, pt = k => { const a = k / N * Math.PI * 2; return [h.x + Math.cos(a) * wr, h.y + Math.sin(a) * ry]; };
+    const wallPath = new Path2D();
+    for (let k = 0; k < N; k++) {
+      const [ax, ay] = pt(k), [bx, by] = pt(k + 1);
+      if (onLand(ax, ay) && onLand(bx, by)) { wallPath.moveTo(ax, ay); wallPath.lineTo(bx, by); }
+    }
+    x.lineCap = 'round';
+    x.strokeStyle = INK; x.lineWidth = 1.8; x.stroke(wallPath);
+    x.strokeStyle = '#e6d5a8'; x.lineWidth = .7; x.stroke(wallPath);
+    x.strokeStyle = INK; x.lineWidth = .55; x.beginPath();
+    for (let k = 0; k < 56; k++) { const a = k / 56 * Math.PI * 2, px = h.x + Math.cos(a) * wr, py = h.y + Math.sin(a) * ry; if (onLand(px, py)) { x.moveTo(px, py); x.lineTo(px, py - 1.3); } }
+    x.stroke();
+    const nt = t.pop >= GREAT ? 8 : 6;
+    for (let k = 0; k < nt; k++) { const a = (k + .5) / nt * Math.PI * 2, px = h.x + Math.cos(a) * wr, py = h.y + Math.sin(a) * ry; if (onLand(px, py)) wallTower(x, px, py); }
+  }
+  // the buildings themselves, drawn back to front as little elevations, the way old maps draw a town
+  const coreN = t.pop >= TOWN ? Math.round(n * .3) : 0, detail = zoom >= 1.6;
+  const roofs = ROOF_SETS[t.i % ROOF_SETS.length], dome = owner[t.i] >= 0 && factions[owner[t.i]].faith % 2 === 1;
+  const order = [];
+  for (let k = 0; k < n; k++) if (onLand(pos[k][0], pos[k][1])) order.push(k);
+  order.sort((a, b) => pos[a][1] - pos[b][1]);
+  for (const k of order) {
+    const p = plots[k];
+    const kind = k === 0 && t.pop >= TOWN ? 'temple' : k === 1 && t.pop >= GREAT ? 'palace'
+      : t.pop >= CITY && k > 1 && k <= coreN && k % 9 === 3 ? 'tower' : p.w > 2.9 ? 'long' : 'house';
+    building(x, kind, pos[k][0], pos[k][1], p, k < coreN ? roofs[0] : roofs[1 + (k % 2)], dome, detail);
   }
   x.restore();
   return plots[Math.max(0, n - 1)].r * 1.2;
