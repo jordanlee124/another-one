@@ -19,6 +19,8 @@ Open `index.html` in a browser. There is no build step and nothing to install. T
 
 **No two worlds share a shape.** Each seed picks a kind of world: a single continent, twin lands divided by a winding strait, a continent wrapped around an inland sea, or an archipelago. Mountains follow ridgelines, so they form ranges instead of blobs. Every sea, lake, mountain range, great forest and desert gets a name. Short dotted sea lanes link separate landmasses, so island realms can be reached and conquered. Ships sail the open water, and the occasional sea serpent lurks there.
 
+**Big events stop the clock.** When a great realm falls, a capital is sacked, a horde arrives or a new age begins, time slows to a crawl. The map darkens around the place, ink rings ripple out from it, and a title banner such as "The Fall of Asharene" writes itself across the map. Only one plays at a time, and the most important event wins.
+
 **The map remembers.** Villages are founded in fertile land at peace, grow into towns and then walled cities, and are put to the torch when their province falls. Roads join each realm's towns to its capital and cross borders only between allies. They are cut where fighting is fresh, and an old road fades slowly after it falls out of use. The bloodiest ground of each great war is marked with crossed swords and the battle's name, and stays on the map for a century and a half.
 
 **Wars show on the map.** Each side's army marches under its banner from the capital to the front and holds the line there. Smoke rises wherever a province changes hands, a sacked capital burns for two years, and a sickly haze circles the capital of a plague-stricken realm. Visitors who ask their system for reduced motion see all of this standing still.

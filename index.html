@@ -1020,6 +1020,7 @@ function sackTown(t, X, Y) {
   if (was === 'city') {
     event(`${fn(X)} puts the city of ${t.name} to the torch.`, [X, Y], lvl(sig(Y, .5) || sig(X), 'big'));
     note(hexes[t.i], `Here ${t.name} burned`);
+    if (sig(Y, .5) || sig(X)) moment(40, hexes[t.i], `${t.name} Burns`, `put to the torch by ${X.name}`);
   }
   fires.push({ i: t.i, until: tick + 18 });
   if (t.pop < .2) { t.ruined = true; t.ruinYear = year(); }
@@ -1110,7 +1111,7 @@ function attack(X, Y, w, key) {
         fires.push({ i: t.i, until: tick + 24 });
         Y.lostCap = tick + 36; relocateCapital(Y);
         event(`${fn(X)} storms and sacks the capital of ${fn(Y)}. ${rulerName(Y.ruler)} flees.`, [X, Y], lvl(sig(Y), 'big'));
-        if (sig(Y)) note(t, `Here ${X.name} sacked the seat of ${Y.name}`);
+        if (sig(Y)) { note(t, `Here ${X.name} sacked the seat of ${Y.name}`); moment(60, t, `The Sack of ${Y.name}`, `${X.name} storms the capital`); }
       }
     }
   }
@@ -1191,7 +1192,7 @@ function civilWar(f) {
   const name = `the War of the ${f.name} Succession`;
   event(`The succession in ${fn(f)} is disputed. ${rulerName(p.ruler)} seizes the western halls and proclaims ${fn(p)}: ${name} begins.`
     .replace('western', pick(['western', 'eastern', 'northern', 'southern', 'outer'])), [f, p], lvl(sig(f), 'big'));
-  if (sig(f)) note(hexes[seat], `Here a pretender raised ${p.name}`);
+  if (sig(f)) { note(hexes[seat], `Here a pretender raised ${p.name}`); if (sig(f, 1.5)) moment(55, hexes[seat], `A Crown Divided`, `the War of the ${f.name} Succession`); }
   declareWar(p, f, name, true);
 }
 
@@ -1206,7 +1207,7 @@ function diplomacy() {
         if (X.traits.loyal < .45 && X.power > Y.power * 1.6 && R() < .12 * X.traits.ambit) {
           const w = declareWar(X, Y, null, true);
           if (w) event(`Faithless ${fn(X)} breaks its oaths and falls upon its ally ${fn(Y)}: ${w.name} begins.`, [X, Y], lvl(sig(X, .5) && sig(Y, .5), 'big'));
-          if (w && sig(X, .5) && sig(Y, .5)) note(hexes[Y.capital], `${X.name} betrayed its ally here`);
+          if (w && sig(X, .5) && sig(Y, .5)) { note(hexes[Y.capital], `${X.name} betrayed its ally here`); moment(50, hexes[Y.capital], `Betrayal`, `${X.name} turns on its ally ${Y.name}`); }
           break;
         }
       }
@@ -1245,7 +1246,7 @@ function disasters() {
   if (!al.length) return;
   const bySize = () => { let s = al.reduce((a, f) => a + f.size ** 1.3, 0) * R(); for (const f of al) { s -= f.size ** 1.3; if (s <= 0) return f; } return al[0]; };
   if (R() < 1 / 45) {
-    const f = bySize(); if (f.plague <= 0) { f.plague = 12 * rnd(3, 6); event(`${pick(['The Grey Sickness', 'The Sweating Plague', 'A red pestilence', 'The Coughing Death'])} comes to ${fn(f)}. The dead are carted out by night.`, [f], 'big'); note(hexes[f.capital], `Plague in ${f.name}`); }
+    const f = bySize(); if (f.plague <= 0) { f.plague = 12 * rnd(3, 6); const pn = pick(['The Grey Sickness', 'The Sweating Plague', 'A red pestilence', 'The Coughing Death']); event(`${pn} comes to ${fn(f)}. The dead are carted out by night.`, [f], 'big'); note(hexes[f.capital], `Plague in ${f.name}`); if (sig(f)) moment(35, hexes[f.capital], `Plague`, `${pn.replace(/^A /, 'a ').replace(/^The /, 'the ')} comes to ${f.name}`); }
   }
   for (const f of al) if (f.plague > 24) for (const [id] of f.fronts) {
     const g = factions[id]; if (g.alive && g.plague <= 0 && R() < .2) { g.plague = 12 * rnd(2, 4); event(`The pestilence crosses into ${fn(g)}.`, [g], lvl(sig(g, 1.5))); }
@@ -1265,7 +1266,7 @@ function spawnHorde() {
   for (const id of victims) { const v = factions[id]; if (v.alive && owner[v.capital] === h.id) relocateCapital(v); }
   dirty = true;
   event(`From beyond the edge of the map ride ${fn(h)} under ${rulerName(h.ruler)}. The steppe-bells are heard for the first time.`, [h], 'big');
-  note(t, `Here rode in the ${h.name} Horde`);
+  note(t, `Here rode in the ${h.name} Horde`); moment(70, t, `The ${h.name} Horde`, `rides in from beyond the edge of the map`);
   for (const id of victims) declareWar(h, factions[id], null, true);
 }
 function absorptions() {
@@ -1300,7 +1301,7 @@ function die(f) {
   for (const g of factions) g.allies.delete(f.id);
   f.allies.clear();
   const great = f.peak >= landCount * .15;
-  if (great) { collapse = { name: f.name, until: tick + 60 }; note(c, `Here ended ${f.name}`); }
+  if (great) { collapse = { name: f.name, until: tick + 60 }; note(c, `Here ended ${f.name}`); moment(100, c, `The Fall of ${f.name}`, `Once ${f.peak} provinces, founded in Year ${f.founded}`); }
   event(great ? `The last banner of ${fn(f)} is lowered. What was once ${f.peak} provinces is now only a name in this ledger.`
               : `${fn(f)} is no more; its lands pass to others.`, [f], great ? 'big' : f.absorbedBy != null ? 'minor' : lvl(f.peak >= T()));
   if (follow === f.id) renderCard();
@@ -1315,7 +1316,7 @@ function eraCheck() {
   for (const f of al) if (!f.broken && f.peak >= landCount * .18 && f.size < f.peak * .45) {
     f.broken = true; collapse = { name: f.name, until: tick + 60 };
     event(`The power of ${fn(f)} is broken; its provinces drift away like leaves.`, [f], 'big');
-    note(hexes[f.capital], `The breaking of ${f.name}`);
+    note(hexes[f.capital], `The breaking of ${f.name}`); moment(80, hexes[f.capital], `${f.name} Is Broken`, `its provinces drift away like leaves`);
   }
   let name = null, kind = null;
   const recent = (k, span = 80) => eras.some(e => e.kind === k && year() - e.start < span);
@@ -1332,7 +1333,7 @@ function startEra(name, kind) {
   const info = new Map();
   for (const f of aliveList()) info.set(f.id, { name: f.name, color: f.color, capital: f.capital, sub: styleOf(f) });
   eras.push({ name, kind, start: year(), snap: { owner: Int16Array.from(owner), info } });
-  if (eras.length > 1) event(name, [], 'era');
+  if (eras.length > 1) { event(name, [], 'era'); moment(90, null, name, `a new age begins in Year ${year()}`); }
   renderTimeline();
 }
 
@@ -1354,7 +1355,7 @@ function initWorld(s) {
   distArr = new Int16Array(hexes.length).fill(-1);
   towns = []; roads = new Map(); battlefields = [];
   factions = []; wars = []; chron = []; eras = []; ruins = []; notes = []; tick = 0; collapse = null; lastWarYear = 0;
-  founding = false; follow = null; viewEra = null; labels = []; snapLabels = []; puffs = []; fires = []; armies = new Map();
+  moments = []; momentNow = null; founding = false; follow = null; viewEra = null; labels = []; snapLabels = []; puffs = []; fires = []; armies = new Map();
   document.getElementById('chron').innerHTML = '';
   document.getElementById('banner').hidden = true;
   renderLandMask(); renderPaper(); renderInk(); buildGridWeights();
@@ -1767,6 +1768,68 @@ function drawArmy(x, a, color, now) {
   }
   x.restore();
 }
+// ---------- big moments: the map stops to mark what matters ----------
+// Major events queue a "moment": time slows, the map dims around the place, ink rings
+// ripple out from it, and a title banner writes itself across the map.
+const MOMENT_MS = 5200, MOMENT_GAP_MS = 4000;
+let moments = [], momentNow = null, momentReady = 0;
+function moment(prio, h, title, sub) {
+  if (bulk || founding) return;          // nothing to watch in years that pass in a blink
+  moments.push({ prio, x: h ? h.x : null, y: h ? h.y : null, title, sub, tick, y0: year() });
+  moments.sort((a, b) => b.prio - a.prio || b.tick - a.tick);
+  if (moments.length > 5) moments.length = 5;
+}
+function updateMoment(now) {
+  if (momentNow && now - momentNow.start > MOMENT_MS) { momentNow = null; momentReady = now + MOMENT_GAP_MS; ovDirty = true; }
+  if (momentNow || now < momentReady || viewEra || !document.getElementById('away').hidden) return;
+  moments = moments.filter(m => tick - m.tick < 36);      // older than three years: the moment has passed
+  const m = moments.shift();
+  if (m) momentNow = { ...m, start: now };
+}
+// time crawls while a moment plays, so it can't be missed
+const momentSlow = now => momentNow && now - momentNow.start < MOMENT_MS - 900 ? .2 : 1;
+function banner(x, cx, cy, w, h) {
+  const l = cx - w / 2, r = cx + w / 2, t = cy - h / 2, b = cy + h / 2, tail = 26;
+  x.fillStyle = '#e2d0a2'; x.strokeStyle = INK; x.lineWidth = 1.4;
+  for (const side of [-1, 1]) {        // folded tails behind the ribbon
+    const ex = side < 0 ? l : r;
+    x.beginPath(); x.moveTo(ex - side * 14, t + 12); x.lineTo(ex + side * tail, t + 12); x.lineTo(ex + side * (tail - 12), cy + 6); x.lineTo(ex + side * tail, b + 10); x.lineTo(ex - side * 14, b + 10); x.closePath(); x.fill(); x.stroke();
+  }
+  x.fillStyle = '#efe3c4';
+  x.beginPath(); x.moveTo(l, t); x.quadraticCurveTo(cx, t - 8, r, t); x.lineTo(r, b); x.quadraticCurveTo(cx, b - 8, l, b); x.closePath(); x.fill(); x.stroke();
+  x.lineWidth = .6; x.beginPath(); x.moveTo(l + 8, t + 6); x.quadraticCurveTo(cx, t - 2, r - 8, t + 6); x.moveTo(l + 8, b - 6); x.quadraticCurveTo(cx, b - 14, r - 8, b - 6); x.stroke();
+}
+function drawMoment(x, now) {
+  const m = momentNow; if (!m) return;
+  const t = clamp((now - m.start) / MOMENT_MS, 0, 1), fade = Math.min(1, t / .07, (1 - t) / .12);
+  x.save();
+  if (m.x != null) {
+    // spotlight on the place
+    const g = x.createRadialGradient(m.x, m.y, 60, m.x, m.y, 360);
+    g.addColorStop(0, 'rgba(28,18,8,0)'); g.addColorStop(1, `rgba(28,18,8,${.5 * fade})`);
+    x.fillStyle = g; x.fillRect(0, 0, MW, MH);
+    if (!reduceMotion) for (let k = 0; k < 3; k++) {
+      const rt = t * 1.7 - k * .2; if (rt < 0 || rt > 1) continue;
+      x.strokeStyle = `rgba(122,36,24,${(1 - rt) * .85 * fade})`; x.lineWidth = 2.2 - rt * 1.4;
+      x.beginPath(); x.arc(m.x, m.y, 10 + rt * 95, 0, 7); x.stroke();
+    }
+  } else { x.fillStyle = `rgba(60,38,12,${.24 * fade})`; x.fillRect(0, 0, MW, MH); }
+  // the banner sits away from the place it describes
+  const cy = m.y == null || m.y > MH * .45 ? MARGIN + 80 : MH - MARGIN - 175, cx = MW / 2;   // clear of the cartouche
+  const title = m.title.toUpperCase().split('').join('\u2009');
+  x.font = '46px "IM Fell English SC", Georgia, serif'; const tw = x.measureText(title).width;
+  x.font = 'italic 21px "IM Fell English", Georgia, serif'; const sub = `${m.sub} · Year ${m.y0}`, sw = x.measureText(sub).width;
+  const w = Math.max(tw, sw) + 100, h = 104;
+  x.globalAlpha = fade; banner(x, cx, cy, w, h);
+  // the ink writes itself across the banner
+  const rv = reduceMotion ? 1 : clamp((t - .05) / .3, 0, 1);
+  x.save(); x.beginPath(); x.rect(cx - w / 2, cy - h / 2 - 10, w * rv, h + 20); x.clip();
+  x.textAlign = 'center'; x.textBaseline = 'middle';
+  x.font = '46px "IM Fell English SC", Georgia, serif'; x.fillStyle = '#7a2418'; x.fillText(title, cx, cy - 12);
+  x.font = 'italic 21px "IM Fell English", Georgia, serif'; x.fillStyle = INK; x.fillText(sub, cx, cy + 28);
+  x.restore();
+  x.restore();
+}
 function drawNotes(x) {
   x.save();
   for (const n of notes) {
@@ -1910,7 +1973,7 @@ function draw() {
     ovDirty = false;
   }
   ctx.drawImage(ovC, 0, 0, MW, MH);
-  if (!viewEra) { drawAnim(ctx, performance.now()); drawNotes(ctx); }
+  if (!viewEra) { const now = performance.now(); drawAnim(ctx, now); drawNotes(ctx); drawMoment(ctx, now); }
 }
 
 // ---------- side panel ----------
@@ -2034,8 +2097,9 @@ function frame(now) {
   const dt = Math.min(now - last, 250); last = now;
   // the founding runs fast, but waits while the welcome panel is open so nobody misses it
   const holding = founding && !document.getElementById('away').hidden;
+  updateMoment(now);
   if (!paused && !holding) {
-    acc += dt * TPS * (founding ? FOUNDING_SPEED : speed) / 1000;
+    acc += dt * TPS * (founding ? FOUNDING_SPEED : speed) * momentSlow(now) / 1000;
     let n = 0; while (acc >= 1 && n < 100) { simTick(); acc--; n++; }
     if (acc > 4) acc = 0;
     if (n) needDraw = true;
