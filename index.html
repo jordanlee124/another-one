@@ -891,6 +891,7 @@ function newFaction(kind, capital, parent) {
   f.gold = parent ? 0 : 5; f.peaceSince = year(); f.golden = 0; f.bankrupt = 0; f.revolYear = -99;
   f.ruler = newRuler(f, kind === 'realm' ? undefined : rnd(25, 45));
   factions.push(f);
+  seatTown(f);
   return f;
 }
 
@@ -1112,9 +1113,11 @@ const govWord = f => ({ kingdom: f.size >= 45 ? 'empire' : 'monarchy', republic:
 const treasuryWord = f => f.gold > f.size * 3 ? 'overflowing' : f.gold > f.size ? 'comfortable' : f.gold > 0 ? 'lean' : 'in debt';
 
 // ---------- the map remembers: towns, roads, battlefields ----------
-const TOWN = 1, CITY = 2.5;                       // population thresholds: village < town < city
+const TOWN = 1, CITY = 2.5, GREAT = 6;            // population thresholds: village < town < city < great city
+const BUILDINGS_PER_POP = 14;                      // how many drawn buildings each unit of population fills
 const townAt = i => towns.find(t => t.i === i && !t.ruined);
-const kindOf = t => t.pop >= CITY ? 'city' : t.pop >= TOWN ? 'town' : 'village';
+const kindOf = t => t.pop >= GREAT ? 'great' : t.pop >= CITY ? 'city' : t.pop >= TOWN ? 'town' : 'village';
+const builtCount = pop => Math.round(pop * BUILDINGS_PER_POP) + 2;
 // a straight road needs dry land the whole way
 function overLand(a, b) {
   const d = Math.hypot(b.x - a.x, b.y - a.y);
@@ -1138,27 +1141,38 @@ function settlements() {
       if (Math.hypot(h.x - c.x, h.y - c.y) < 75 || live.some(t => Math.hypot(hexes[t.i].x - h.x, hexes[t.i].y - h.y) < 75)) continue;
       if (h.food > bs) { bs = h.food; best = h; }
     }
-    if (best) { const t = { i: best.i, name: placeName(), pop: .3, founded: year() }; towns.push(t); live.push(t); dirty = true; }
+    if (best) { const t = { i: best.i, name: placeName(), pop: .3, peak: .3, founded: year() }; towns.push(t); live.push(t); dirty = true; }
   }
   // towns grow in peace and wither in war, plague and famine
   for (const t of towns) {
     if (t.ruined) continue;
     const o = owner[t.i], f = o >= 0 ? factions[o] : null, h = hexes[t.i], was = kindOf(t);
-    if (!f) { t.pop *= .97; continue; }
-    if (f.plague > 0) t.pop *= .95;
-    else if (f.famine > 0) t.pop *= .98;
-    else t.pop = Math.min(4, t.pop + h.food * (f.nWars > 0 ? .003 : .011) * (f.golden > tick ? 1.8 : 1));
+    const before = builtCount(t.pop);
+    if (!f) t.pop *= .97;
+    else if (f.plague > 0) t.pop *= .94;
+    else if (f.famine > 0) t.pop *= .97;
+    else {
+      // prosperity: a full treasury, a golden age, busy roads, peace and being the seat of a realm
+      const isSeat = f.capital === t.i, nRoads = [...roads.values()].filter(r => r.used && (r.a === t.i || r.b === t.i)).length;
+      const prosper = Math.max(.2, 1 + clamp(f.gold / (f.size * 3 + 10), -.6, .6) + (f.golden > tick ? .9 : 0) + nRoads * .2 + (isSeat ? .6 : 0) - (f.bankrupt > tick ? .5 : 0));
+      const room = 3 + h.food * 1.4 + (isSeat ? 3 : 0) + (h.river ? 1 : 0) + (h.coast ? 1 : 0);    // how big this place can ever get
+      t.pop += h.food * .012 * prosper * (f.nWars > 0 ? .3 : 1) * Math.max(0, 1 - t.pop / room);
+      if (f.bankrupt > tick) t.pop *= .985;
+    }
+    t.peak = Math.max(t.peak || 0, t.pop);
+    if (builtCount(t.pop) !== before) ovDirty = true;
     const now = kindOf(t);
-    if (now !== was) {
+    if (now !== was && f) {
       dirty = true;
-      if (now === 'city') event(`${t.name} in ${fn(f)} has grown into a great city.`, [f], lvl(sig(f)));
+      if (now === 'city' && was === 'town') event(`${t.name} in ${fn(f)} raises its walls: a town no longer, but a city.`, [f], 'minor');
+      if (now === 'great') event(`${t.name} in ${fn(f)} has grown into a great city, its suburbs spilling far beyond the old walls.`, [f], lvl(sig(f)));
     }
   }
   towns = towns.filter(t => !t.ruined || year() - t.ruinYear < 150);
   // roads join a realm's settlements in a network, and cross borders only between allies
   const active = new Map();
   const nodesOf = f => [hexes[f.capital], ...towns.filter(t => !t.ruined && t.pop >= TOWN && owner[t.i] === f.id).map(t => hexes[t.i])];
-  const link = (a, b) => { const k = Math.min(a.i, b.i) + '-' + Math.max(a.i, b.i); active.set(k, [Math.min(a.i, b.i), Math.max(a.i, b.i)]); };
+  const link = (a, b) => { if (a.i === b.i) return; const k = Math.min(a.i, b.i) + '-' + Math.max(a.i, b.i); active.set(k, [Math.min(a.i, b.i), Math.max(a.i, b.i)]); };
   const nodes = new Map(al.map(f => [f.id, nodesOf(f)]));
   for (const f of al) {
     const ns = nodes.get(f.id); if (ns.length < 2) continue;
@@ -1188,7 +1202,7 @@ function sackTown(t, X, Y) {
   if (R() > .5) return;
   const was = kindOf(t);
   t.pop *= .35; dirty = true;
-  if (was === 'city') {
+  if (was === 'city' || was === 'great') {
     event(`${fn(X)} puts the city of ${t.name} to the torch.`, [X, Y], lvl(sig(Y, .5) || sig(X), 'big'));
     note(hexes[t.i], `Here ${t.name} burned`);
     if (sig(Y, .5) || sig(X)) moment(40, hexes[t.i], `${t.name} Burns`, `put to the torch by ${X.name}`);
@@ -1246,10 +1260,19 @@ function computeStats() {
 function relocateCapital(f) {
   let best = -1, bs = -1;
   for (const h of land) if (owner[h.i] === f.id) {
-    const s = h.food + h.nb.filter(n => owner[n] === f.id).length + R();
+    const s = h.food + h.nb.filter(n => owner[n] === f.id).length + (townAt(h.i) ? 4 : 0) + R();
     if (s > bs) { bs = s; best = h.i; }
   }
-  if (best >= 0) f.capital = best;
+  if (best >= 0) { f.capital = best; seatTown(f); }
+}
+// a realm's seat is always a settlement; the old seat keeps its town when the capital moves
+function seatTown(f) {
+  if (!towns || townAt(f.capital)) return;
+  // a seat close to an existing town simply governs from there rather than founding another
+  const c = hexes[f.capital];
+  if (towns.some(t => !t.ruined && Math.hypot(hexes[t.i].x - c.x, hexes[t.i].y - c.y) < 55)) return;
+  towns = towns.filter(t => !(t.i === f.capital && t.ruined));
+  towns.push({ i: f.capital, name: placeName(), pop: .6, peak: .6, founded: year() });
 }
 
 function expansion() {
@@ -1798,14 +1821,21 @@ function drawOverlay(x, own, labs, live, fields, borders) {
   }
   // towns and cities, then their names where there is room
   if (live) {
-    for (const t of towns) drawTown(x, t);
+    const arms = new Map();
+    for (const r of roads.values()) {
+      const a = hexes[r.a], b = hexes[r.b];
+      if (!arms.has(r.a)) arms.set(r.a, []); if (!arms.has(r.b)) arms.set(r.b, []);
+      arms.get(r.a).push(Math.atan2(b.y - a.y, b.x - a.x)); arms.get(r.b).push(Math.atan2(a.y - b.y, a.x - b.x));
+    }
+    const reach = new Map();
+    for (const t of towns) { if (t.ruined) drawTown(x, t); else reach.set(t, drawSettlement(x, t, arms.get(t.i) || [])); }
     x.textBaseline = 'middle';
-    for (const t of [...towns].filter(t => !t.ruined && t.pop >= TOWN).sort((a, b) => b.pop - a.pop)) {
-      const h = hexes[t.i], fs = t.pop >= CITY ? 14 : 12;
-      x.font = `${t.pop >= CITY ? '' : 'italic '}${fs}px "IM Fell English", Georgia, serif`;
+    for (const t of [...towns].filter(t => !t.ruined && t.pop >= TOWN && !factions.some(f => f.alive && f.capital === t.i)).sort((a, b) => b.pop - a.pop)) {
+      const h = hexes[t.i], fs = Math.round(11 + Math.min(7, t.pop));
+      x.font = `${t.pop >= CITY ? '' : 'italic '}${fs}px "IM Fell English${t.pop >= GREAT ? ' SC' : ''}", Georgia, serif`;
       const w = x.measureText(t.name).width;
       for (const side of [1, -1]) {
-        const tx = h.x + side * (t.pop >= CITY ? 10 : 8), b = side > 0 ? { x0: tx, x1: tx + w, y0: h.y - fs * .6, y1: h.y + fs * .6 } : { x0: tx - w, x1: tx, y0: h.y - fs * .6, y1: h.y + fs * .6 };
+        const tx = h.x + side * (Math.min(reach.get(t) || 8, 22) + 4), b = side > 0 ? { x0: tx, x1: tx + w, y0: h.y - fs * .6, y1: h.y + fs * .6 } : { x0: tx - w, x1: tx, y0: h.y - fs * .6, y1: h.y + fs * .6 };
         if (hit(b) || !inFrame(b)) continue;
         boxes.push(b); x.textAlign = side > 0 ? 'left' : 'right';
         x.lineWidth = 3; x.strokeStyle = 'rgba(236,222,186,.8)'; x.strokeText(t.name, tx, h.y); x.fillStyle = '#3a2b1c'; x.fillText(t.name, tx, h.y);
@@ -2128,6 +2158,64 @@ function drawRoads(x) {
     x.stroke();
   }
   x.setLineDash([]); x.globalAlpha = 1;
+}
+// each settlement has a fixed, seeded set of building plots spiralling out from its centre;
+// it fills them in order as it grows, so growth reads as sprawl and decline leaves empty plots
+const plotCache = new Map();
+function plotsFor(t) {
+  const key = t.i + ':' + t.founded; let s = plotCache.get(key); if (s) return s;
+  const rr = mulberry32((seed ^ Math.imul(t.i + 1, 2654435761) ^ t.founded) >>> 0); s = [];
+  for (let k = 0; k < 190; k++) s.push({ a: rr() * Math.PI * 2, r: Math.sqrt(k) * 2.9 * (.8 + rr() * .4), rot: (rr() - .5) * .9, w: 1.8 + rr() * 1.4, h: 1.4 + rr() * .9 });
+  s.sort((p, q) => p.r - q.r); plotCache.set(key, s); return s;
+}
+function plotPos(h, p, arms) {
+  // plots near a road reach further out, so towns stretch along their roads
+  let st = 1; for (const a of arms) { const c = Math.cos(p.a - a); if (c > 0) st = Math.max(st, 1 + .9 * c ** 6); }
+  return [h.x + Math.cos(p.a) * p.r * st, h.y + Math.sin(p.a) * p.r * st * .85];
+}
+const onLand = (px, py) => F[clamp(Math.round(py / GS), 0, gh - 1) * gw + clamp(Math.round(px / GS), 0, gw - 1)] > thr + .004;
+function houseShape(path, px, py, p, k) {
+  const c = Math.cos(p.rot), sn = Math.sin(p.rot), w = p.w * k, hh = p.h * k;
+  const pts = [[-w, -hh], [w, -hh], [w, hh], [-w, hh]].map(([u, v]) => [px + u * c - v * sn, py + u * sn + v * c]);
+  path.moveTo(pts[0][0], pts[0][1]); for (let i = 1; i < 4; i++) path.lineTo(pts[i][0], pts[i][1]); path.closePath();
+}
+function drawSettlement(x, t, arms) {
+  const h = hexes[t.i], plots = plotsFor(t);
+  const n = Math.min(plots.length, builtCount(t.pop)), peakN = Math.min(plots.length, builtCount(t.peak || t.pop));
+  const pos = plots.map(p => plotPos(h, p, arms));
+  x.save(); x.lineJoin = 'round';
+  // farmland: a patchwork of fields around any settlement that can feed itself
+  if (t.pop >= .6) {
+    const edge = plots[Math.min(n, plots.length - 1)].r, rr = mulberry32(t.i * 7919 + 1);
+    x.strokeStyle = 'rgba(110,88,46,.4)'; x.lineWidth = .45; x.beginPath();
+    for (let k = 0; k < Math.min(30, n * .45); k++) {
+      const a = rr() * Math.PI * 2, r = edge + 5 + rr() * 9 + t.pop * .8, cx = h.x + Math.cos(a) * r, cy = h.y + Math.sin(a) * r * .85;
+      if (!onLand(cx, cy)) continue;
+      const fw = 2.5 + rr() * 2.5, tilt = rr() * Math.PI;
+      for (let l = -2; l <= 2; l++) { const ox = Math.cos(tilt + 1.57) * l * 1.1, oy = Math.sin(tilt + 1.57) * l * 1.1; x.moveTo(cx + ox - Math.cos(tilt) * fw, cy + oy - Math.sin(tilt) * fw); x.lineTo(cx + ox + Math.cos(tilt) * fw, cy + oy + Math.sin(tilt) * fw); }
+    }
+    x.stroke();
+  }
+  // districts abandoned since the town's height: empty outlines
+  if (peakN > n) {
+    const ghost = new Path2D();
+    for (let k = n; k < peakN; k++) if (onLand(pos[k][0], pos[k][1])) houseShape(ghost, pos[k][0], pos[k][1], plots[k], .75);
+    x.setLineDash([.6, 1.2]); x.strokeStyle = 'rgba(90,70,50,.55)'; x.lineWidth = .4; x.stroke(ghost); x.setLineDash([]);
+  }
+  // the buildings themselves: an old, dense core and newer outskirts
+  const core = new Path2D(), outer = new Path2D(), coreN = t.pop >= TOWN ? Math.round(n * .3) : 0;
+  for (let k = 0; k < n; k++) if (onLand(pos[k][0], pos[k][1])) houseShape(k < coreN ? core : outer, pos[k][0], pos[k][1], plots[k], .75);
+  x.fillStyle = '#b59565'; x.fill(core); x.fillStyle = '#ecdcb2'; x.fill(outer);
+  x.strokeStyle = INK; x.lineWidth = .5; x.stroke(core); x.stroke(outer);
+  // a city raises walls around the plots it held when it became one; later growth spills outside them
+  if (t.pop >= CITY) {
+    const wr = plots[Math.min(builtCount(CITY), plots.length) - 1].r + 2.5;
+    x.strokeStyle = 'rgba(58,43,28,.8)'; x.lineWidth = .9; x.beginPath(); x.ellipse(h.x, h.y, wr, wr * .85, 0, 0, 7); x.stroke();
+    x.fillStyle = INK;
+    for (let k = 0; k < 7; k++) { const a = k / 7 * Math.PI * 2; x.fillRect(h.x + Math.cos(a) * wr - 1, h.y + Math.sin(a) * wr * .85 - 1, 2, 2); }
+  }
+  x.restore();
+  return plots[Math.max(0, n - 1)].r * 1.2;
 }
 function drawTown(x, t) {
   const h = hexes[t.i];
