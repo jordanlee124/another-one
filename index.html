@@ -37,7 +37,14 @@
   button.danger { background: var(--blood); border-color: #c45a48; }
   main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; min-height: 0; }
   #mapwrap { position: relative; min-width: 0; min-height: 0; }
-  #map { position: absolute; inset: 0; width: 100%; height: 100%; cursor: pointer; display: block; }
+  #map { position: absolute; inset: 0; width: 100%; height: 100%; cursor: grab; display: block; touch-action: none; }
+  #map.dragging { cursor: grabbing; }
+  #zoomctl {
+    position: absolute; z-index: 2; display: flex; flex-direction: column; gap: 4px;
+    left: max(12px, env(safe-area-inset-left, 0px)); top: 12px;
+  }
+  #zoomctl button { width: 32px; height: 32px; padding: 0; font-size: 18px; line-height: 1; background: rgba(46,34,24,.9); }
+  #zoomctl button:disabled { opacity: .4; cursor: default; }
   #founding {
     position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 1;
     display: flex; gap: 12px; align-items: center; flex-wrap: wrap; justify-content: center;
@@ -146,6 +153,11 @@
     <canvas id="map"></canvas>
     <div id="loading">The cartographer sharpens a quill…</div>
     <div id="banner" hidden></div>
+    <div id="zoomctl" role="group" aria-label="Map zoom">
+      <button id="zin" aria-label="Zoom in" title="Zoom in (+)">+</button>
+      <button id="zout" aria-label="Zoom out" title="Zoom out (−)">−</button>
+      <button id="zreset" aria-label="Show the whole map" title="Whole map (0)">⤢</button>
+    </div>
     <div id="founding" hidden>
       <span><i>The founding years pass quickly…</i> <span id="foundyr"></span></span>
       <button id="foundskip">Watch at normal speed</button>
@@ -159,7 +171,7 @@
   </div>
   <aside>
     <div id="card" hidden></div>
-    <p class="hint" id="hint">Click any realm on the map to follow its fortunes.</p>
+    <p class="hint" id="hint">Click any realm on the map to follow its fortunes. Scroll or pinch to zoom, and drag to move around.</p>
     <h2>The Chronicle</h2>
     <div id="chron"></div>
   </aside>
@@ -1600,7 +1612,7 @@ function initWorld(s) {
   document.getElementById('chron').innerHTML = '';
   document.getElementById('banner').hidden = true;
   renderLandMask(); renderPaper(); renderInk(); buildGridWeights();
-  ovC = mk(MW * OS, MH * OS); washC = mk(MW * OS, MH * OS); washTmp = mk(MW * OS, MH * OS); snapWashC = mk(MW * OS, MH * OS);
+  ovC = mk(Math.max(1, cv.width), Math.max(1, cv.height)); washC = mk(MW * OS, MH * OS); washTmp = mk(MW * OS, MH * OS); snapWashC = mk(MW * OS, MH * OS);
 }
 // a link that opens this same world, from its founding, for whoever receives it
 function shareUrl() {
@@ -1705,6 +1717,7 @@ function showIntro(shared) {
     and fall without anyone's help, and the chronicle on the right records every reign.</p>
     <ul>
       <li>Click a realm, or a name in the chronicle, to follow its fortunes.</li>
+      <li>Scroll or pinch to zoom in on a city, and drag to move around the map.</li>
       <li>Click an age on the timeline below to see the map as it stood then.</li>
       <li>Close the tab whenever you like. Time keeps passing, and you'll hear what happened when you return.</li>
     </ul>
@@ -1761,12 +1774,33 @@ function catchUp(ms) {
 // ---------- drawing ----------
 const cv = document.getElementById('map'), ctx = cv.getContext('2d');
 let scale = 1, ox = 0, oy = 0, dpr = 1;
+// the view: `fit` shows the whole map; `zoom` multiplies it around a centre point (vcx, vcy) in map units.
+// `scale`, `ox`, `oy` are the resulting map-to-screen transform used everywhere else.
+const MAX_ZOOM = 4;
+let zoom = 1, vcx = MW / 2, vcy = MH / 2, fit = 1, fox = 0, foy = 0, viewW = 1, viewH = 1;
+function applyView() {
+  const S = fit * zoom, hw = viewW / (2 * S), hh = viewH / (2 * S);
+  vcx = MW / 2 <= hw ? MW / 2 : clamp(vcx, hw, MW - hw);
+  vcy = MH / 2 <= hh ? MH / 2 : clamp(vcy, hh, MH - hh);
+  scale = S; ox = viewW / 2 - vcx * S; oy = viewH / 2 - vcy * S;
+  ovDirty = true; needDraw = true;
+  const zo = document.getElementById('zout'), zr = document.getElementById('zreset'), zi = document.getElementById('zin');
+  if (zo) { zo.disabled = zoom <= 1; zr.disabled = zoom <= 1; zi.disabled = zoom >= MAX_ZOOM; }
+}
+// zoom by factor f keeping the map point under screen point (px, py) where it is
+function zoomAt(px, py, f) {
+  const wx = (px - ox) / scale, wy = (py - oy) / scale;
+  zoom = clamp(zoom * f, 1, MAX_ZOOM);
+  const S = fit * zoom; vcx = wx - (px - viewW / 2) / S; vcy = wy - (py - viewH / 2) / S;
+  applyView();
+}
 function resize() {
   const wrap = document.getElementById('mapwrap'), w = wrap.clientWidth, h = wrap.clientHeight;
   dpr = Math.min(window.devicePixelRatio || 1, 2);
   cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
-  scale = Math.min(w / MW, h / MH); ox = (w - MW * scale) / 2; oy = (h - MH * scale) / 2;
-  needDraw = true;
+  if (ovC) { ovC.width = cv.width; ovC.height = cv.height; }
+  viewW = w; viewH = h; fit = Math.min(w / MW, h / MH); fox = (w - MW * fit) / 2; foy = (h - MH * fit) / 2;
+  applyView();
 }
 addEventListener('resize', resize);
 
@@ -1775,6 +1809,7 @@ function spaced(s) { return s.toUpperCase().split('').join(' '); }
 // borders, names, capitals and ruins: redrawn only when something changes
 function drawOverlay(x, own, labs, live, fields, borders) {
   x.lineCap = 'round'; x.lineJoin = 'round';
+  const LZ = 1 / Math.sqrt(zoom);
   // borders: dash-dot between realms, faint dots against the wilds, clipped to the coast
   x.save();
   x.strokeStyle = INK;
@@ -1789,7 +1824,7 @@ function drawOverlay(x, own, labs, live, fields, borders) {
     x.strokeStyle = dark(factions[fol]); x.lineWidth = 2.6; x.globalAlpha = .9; strokeLines(x, chain(keep)); x.globalAlpha = 1;
   }
   if (live) drawRoads(x);
-  x.setTransform(1, 0, 0, 1, 0, 0); x.globalCompositeOperation = 'destination-in'; x.drawImage(landBig, 0, 0);
+  x.globalCompositeOperation = 'destination-in'; x.drawImage(landBig, 0, 0, MW, MH);
   x.restore();
   // place names without collisions: biggest realms first; a name that would overlap tries other
   // spots in its realm, then smaller sizes, and a small realm's name is left off rather than crowd the map
@@ -1810,7 +1845,7 @@ function drawOverlay(x, own, labs, live, fields, borders) {
     };
     let done = null;
     for (const k of [1, .85, .72]) {
-      const size = Math.max(9, l.size * k);
+      const size = Math.max(9 * LZ, l.size * k * LZ);
       x.font = `${size}px "IM Fell English SC", Georgia, serif`;
       const w = x.measureText(spaced(l.name)).width + 8;
       for (const c of l.cands) { const b = boxAt(c, size, w); if (!hit(b) && inFrame(b)) { done = { c, size, b }; break; } }
@@ -1831,7 +1866,7 @@ function drawOverlay(x, own, labs, live, fields, borders) {
     for (const t of towns) { if (t.ruined) drawTown(x, t); else reach.set(t, drawSettlement(x, t, arms.get(t.i) || [])); }
     x.textBaseline = 'middle';
     for (const t of [...towns].filter(t => !t.ruined && t.pop >= TOWN && !factions.some(f => f.alive && f.capital === t.i)).sort((a, b) => b.pop - a.pop)) {
-      const h = hexes[t.i], fs = Math.round(11 + Math.min(7, t.pop));
+      const h = hexes[t.i], fs = (11 + Math.min(7, t.pop)) * LZ;
       x.font = `${t.pop >= CITY ? '' : 'italic '}${fs}px "IM Fell English${t.pop >= GREAT ? ' SC' : ''}", Georgia, serif`;
       const w = x.measureText(t.name).width;
       for (const side of [1, -1]) {
@@ -1847,8 +1882,8 @@ function drawOverlay(x, own, labs, live, fields, borders) {
     for (const bf of battlefields) {
       const fade = clamp(1 - (year() - bf.year) / 150, 0, 1); if (fade <= 0) continue;
       x.globalAlpha = .55 + .45 * fade; battleMark(x, bf.x, bf.y);
-      x.font = 'italic 11px "IM Fell English", Georgia, serif';
-      const label = `${bf.name}, ${bf.year}`, w = x.measureText(label).width, b = { x0: bf.x - w / 2 - 2, x1: bf.x + w / 2 + 2, y0: bf.y + 7, y1: bf.y + 19 };
+      x.font = `italic ${11 * LZ}px "IM Fell English", Georgia, serif`;
+      const label = `${bf.name}, ${bf.year}`, w = x.measureText(label).width, b = { x0: bf.x - w / 2 - 2, x1: bf.x + w / 2 + 2, y0: bf.y + 7, y1: bf.y + 7 + 12 * LZ };
       if (!hit(b) && inFrame(b)) { boxes.push(b); x.lineWidth = 3; x.strokeStyle = 'rgba(236,222,186,.75)'; x.strokeText(label, bf.x, bf.y + 13); x.fillStyle = '#5a2a1c'; x.fillText(label, bf.x, bf.y + 13); }
       x.globalAlpha = 1;
     }
@@ -1857,12 +1892,13 @@ function drawOverlay(x, own, labs, live, fields, borders) {
   // mountain ranges, forests and wastes, in lighter ink, wherever the realms leave room
   for (const f of features) {
     if (f.kind !== 'land') continue;
-    x.font = `italic ${f.size}px "IM Fell English SC", Georgia, serif`;
+    const fsz = f.size * LZ;
+    x.font = `italic ${fsz}px "IM Fell English SC", Georgia, serif`;
     const w = x.measureText(f.name.split('').join('\u200a')).width + 6, ca = Math.abs(Math.cos(f.ang)), sa = Math.abs(Math.sin(f.ang));
-    const b = { x0: f.x - ca * w / 2 - sa * f.size * .6, x1: f.x + ca * w / 2 + sa * f.size * .6, y0: f.y + 8 - sa * w / 2 - ca * f.size * .6, y1: f.y + 8 + sa * w / 2 + ca * f.size * .6 };
+    const b = { x0: f.x - ca * w / 2 - sa * fsz * .6, x1: f.x + ca * w / 2 + sa * fsz * .6, y0: f.y + 8 - sa * w / 2 - ca * fsz * .6, y1: f.y + 8 + sa * w / 2 + ca * fsz * .6 };
     if (hit(b) || !inFrame(b)) continue;
     boxes.push(b);
-    spacedLabel(x, f.name, f.x, f.y + 8, f.ang, f.size, '#4a3826', 'rgba(236,222,186,.8)');
+    spacedLabel(x, f.name, f.x, f.y + 8, f.ang, fsz, '#4a3826', 'rgba(236,222,186,.8)');
   }
   // capitals
   for (const l of labs) { const c = hexes[l.capital]; if (c && own[c.i] === l.id) castle(x, c.x, c.y, l.color); }
@@ -1872,7 +1908,7 @@ function drawOverlay(x, own, labs, live, fields, borders) {
     for (const r of ruins) {
       const fade = clamp(1 - (year() - r.year) / 200, 0, 1); if (fade <= 0) continue;
       x.globalAlpha = .7 * fade; ruin(x, r.x, r.y);
-      const fs = clamp(8 + Math.sqrt(r.peak), 9, 14), t = `old ${r.name}`;
+      const fs = clamp(8 + Math.sqrt(r.peak), 9, 14) * LZ, t = `old ${r.name}`;
       x.font = `italic ${fs}px "IM Fell English", Georgia, serif`;
       const w = x.measureText(t).width, b = { x0: r.x - w / 2 - 2, x1: r.x + w / 2 + 2, y0: r.y + 15 - fs * .8, y1: r.y + 15 + fs * .3 };
       if (hit(b)) continue;
@@ -2075,7 +2111,8 @@ function drawMoment(x, now) {
       x.beginPath(); x.arc(m.x, m.y, 10 + rt * 95, 0, 7); x.stroke();
     }
   } else { x.fillStyle = `rgba(60,38,12,${.24 * fade})`; x.fillRect(0, 0, MW, MH); }
-  // the banner sits away from the place it describes
+  // the banner sits away from the place it describes, at the same place on screen whatever the zoom
+  x.setTransform(dpr * fit, 0, 0, dpr * fit, dpr * fox, dpr * foy);
   const cy = m.y == null || m.y > MH * .45 ? MARGIN + 80 : MH - MARGIN - 175, cx = MW / 2;   // clear of the cartouche
   const title = m.title.toUpperCase().split('').join('\u2009');
   x.font = '46px "IM Fell English SC", Georgia, serif'; const tw = x.measureText(title).width;
@@ -2287,11 +2324,12 @@ function draw() {
   if (!viewEra) drawLiveMarks(ctx);
   if (ovDirty) {
     const o = ovC.getContext('2d');
-    o.setTransform(1, 0, 0, 1, 0, 0); o.clearRect(0, 0, ovC.width, ovC.height); o.setTransform(OS, 0, 0, OS, 0, 0);
+    // the overlay is drawn at screen resolution for the current view, so names stay crisp at any zoom
+    o.setTransform(1, 0, 0, 1, 0, 0); o.clearRect(0, 0, ovC.width, ovC.height); o.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * ox, dpr * oy);
     if (viewEra) drawOverlay(o, viewEra.snap.owner, snapLabels, false, snapFields, snapBorders); else if (faithMode) drawOverlay(o, faithView, labels, false, liveFields, liveBorders); else drawOverlay(o, owner, labels, true, liveFields, liveBorders);
     ovDirty = false;
   }
-  ctx.drawImage(ovC, 0, 0, MW, MH);
+  ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(ovC, 0, 0); ctx.restore();
   if (!viewEra) { const now = performance.now(); drawAnim(ctx, now); drawNotes(ctx); drawMoment(ctx, now); }
 }
 
@@ -2377,14 +2415,64 @@ document.getElementById('faithmode').onclick = () => { if (viewEra) showEra(null
 document.getElementById('away').addEventListener('click', ev => { const a = ev.target.closest('a.fn'); if (a) { follow = +a.dataset.f; renderCard(); } });
 chronEl.addEventListener('click', ev => { const a = ev.target.closest('a.fn'); if (a) { follow = +a.dataset.f; renderCard(); } });
 document.getElementById('card').addEventListener('click', ev => { const a = ev.target.closest('a.fn'); if (a) { follow = +a.dataset.f; renderCard(); } });
-cv.addEventListener('click', ev => {
-  const rc = cv.getBoundingClientRect(), wx = (ev.clientX - rc.left - ox) / scale, wy = (ev.clientY - rc.top - oy) / scale;
+// pointer input: drag to pan, pinch or wheel to zoom, a tap (no drag) follows the realm under it
+const pts = new Map();
+let dragMoved = 0, pinch = null;
+const pinchState = () => { const [a, b] = [...pts.values()]; return { mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2, d: Math.max(10, Math.hypot(a.x - b.x, a.y - b.y)) }; };
+cv.addEventListener('pointerdown', e => {
+  try { cv.setPointerCapture(e.pointerId); } catch (err) {}
+  pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  dragMoved = pts.size > 1 ? 99 : 0;
+  if (pts.size === 2) pinch = pinchState();
+  cv.classList.add('dragging');
+});
+cv.addEventListener('pointermove', e => {
+  const p = pts.get(e.pointerId); if (!p) return;
+  const dx = e.clientX - p.x, dy = e.clientY - p.y;
+  p.x = e.clientX; p.y = e.clientY;
+  if (pts.size === 1) {
+    dragMoved += Math.abs(dx) + Math.abs(dy);
+    if (dragMoved > 5) { vcx -= dx / scale; vcy -= dy / scale; applyView(); }
+  } else if (pts.size === 2 && pinch) {
+    const now = pinchState(), rc = cv.getBoundingClientRect();
+    vcx -= (now.mx - pinch.mx) / scale; vcy -= (now.my - pinch.my) / scale; applyView();
+    zoomAt(now.mx - rc.left, now.my - rc.top, now.d / pinch.d);
+    pinch = now;
+  }
+});
+function endPointer(e) {
+  if (!pts.has(e.pointerId)) return;
+  if (e.type === 'pointerup' && pts.size === 1 && dragMoved <= 5) selectAt(e.clientX, e.clientY);
+  pts.delete(e.pointerId);
+  if (pts.size < 2) pinch = null;
+  if (!pts.size) cv.classList.remove('dragging');
+}
+cv.addEventListener('pointerup', endPointer);
+cv.addEventListener('pointercancel', endPointer);
+cv.addEventListener('wheel', e => {
+  e.preventDefault();
+  const rc = cv.getBoundingClientRect();
+  zoomAt(e.clientX - rc.left, e.clientY - rc.top, Math.exp(-e.deltaY * (e.deltaMode ? .05 : .0015)));
+}, { passive: false });
+cv.addEventListener('dblclick', e => { const rc = cv.getBoundingClientRect(); zoomAt(e.clientX - rc.left, e.clientY - rc.top, 2); });
+const zoomCentre = f => zoomAt(viewW / 2, viewH / 2, f);
+document.getElementById('zin').onclick = () => zoomCentre(1.6);
+document.getElementById('zout').onclick = () => zoomCentre(1 / 1.6);
+document.getElementById('zreset').onclick = () => { zoom = 1; applyView(); };
+document.addEventListener('keydown', e => {
+  if (e.target.closest('input, select, textarea') || e.metaKey || e.ctrlKey || e.altKey) return;
+  const step = 80 / scale, keys = { '+': () => zoomCentre(1.4), '=': () => zoomCentre(1.4), '-': () => zoomCentre(1 / 1.4), '0': () => { zoom = 1; applyView(); },
+    ArrowLeft: () => { vcx -= step; applyView(); }, ArrowRight: () => { vcx += step; applyView(); }, ArrowUp: () => { vcy -= step; applyView(); }, ArrowDown: () => { vcy += step; applyView(); } };
+  if (keys[e.key] && (zoom > 1 || !e.key.startsWith('Arrow'))) { keys[e.key](); e.preventDefault(); }
+});
+function selectAt(clientX, clientY) {
+  const rc = cv.getBoundingClientRect(), wx = (clientX - rc.left - ox) / scale, wy = (clientY - rc.top - oy) / scale;
   let best = null, bd = HR * HR * 1.2;
   for (const h of land) { const d = (h.x - wx) ** 2 + (h.y - wy) ** 2; if (d < bd) { bd = d; best = h; } }
   const own = viewEra ? viewEra.snap.owner : owner;
   follow = best && own[best.i] >= 0 ? own[best.i] : null;
   renderCard();
-});
+}
 
 // ---------- controls & loop ----------
 let lastDraw = 0, needDraw = true, paused = false, speed = 1, last = performance.now(), acc = 0, lastWash = -1e9, lastUI = 0;

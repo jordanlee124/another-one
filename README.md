@@ -11,6 +11,7 @@ There is no player. You watch, follow a realm you care about, and come back late
 Open `index.html` in a browser. There is no build step and nothing to install. The page loads two typefaces from Google Fonts and falls back to Georgia when offline.
 
 - **Follow a realm:** click it on the map or its name in the chronicle.
+- **Zoom and move:** scroll or pinch to zoom up to 4×, drag to move, and double-click to zoom in. The buttons in the corner and the + − 0 and arrow keys do the same. Names stay sharp and more of them appear as you zoom in.
 - **Look back:** click an age on the timeline to see the map as it stood when that age began.
 - **Share a world:** **Share world** copies a link. Anyone who opens it watches the same world unfold from the same seed. Their own world is set aside, not erased.
 - **Seeds:** `index.html?seed=4242` always produces the same world and the same history.
