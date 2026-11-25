@@ -1863,6 +1863,7 @@ function drawOverlay(x, own, labs, live, fields, borders) {
       arms.get(r.a).push(Math.atan2(b.y - a.y, b.x - a.x)); arms.get(r.b).push(Math.atan2(a.y - b.y, a.x - b.x));
     }
     const reach = new Map();
+    for (const t of towns) drawFields(x, t);          // all farmland first, so no town's fields cover another's houses
     for (const t of towns) { if (t.ruined) drawTown(x, t); else reach.set(t, drawSettlement(x, t, arms.get(t.i) || [])); }
     x.textBaseline = 'middle';
     for (const t of [...towns].filter(t => !t.ruined && t.pop >= TOWN && !factions.some(f => f.alive && f.capital === t.i)).sort((a, b) => b.pop - a.pop)) {
@@ -2254,23 +2255,45 @@ function wallTower(x, px, py) {
   x.beginPath(); x.rect(px - 1.4, py - 4, 2.8, 4.5); x.fill(); x.stroke();
   x.fillStyle = '#7a5a44'; x.beginPath(); x.moveTo(px - 1.8, py - 4); x.lineTo(px, py - 6.8); x.lineTo(px + 1.8, py - 4); x.closePath(); x.fill(); x.stroke();
 }
+// field colours: ripe wheat, green crops, fallow earth; a golden age turns them richer
+const FIELD_TINTS = ['rgba(205,182,112,.5)', 'rgba(150,165,96,.45)', 'rgba(176,150,98,.4)'];
+const FIELD_LUSH = ['rgba(222,190,92,.62)', 'rgba(140,172,80,.58)', 'rgba(200,176,96,.52)'];
+// the hex nearest a map point, using the grid's own layout
+function nearestHex(px, py) {
+  const r = clamp(Math.round((py - Y0) / (1.5 * HR)), 0, ROWS - 1), c = clamp(Math.round((px - X0) / (SQ3 * HR) - .5 * (r & 1)), 0, COLS - 1);
+  return r * COLS + c;
+}
+// farmland: an irregular patchwork of plots around the town; bigger, richer towns farm a wider band
+function drawFields(x, t) {
+  if (t.ruined || t.pop < .4) return;
+  const h = hexes[t.i], plots = plotsFor(t), n = Math.min(plots.length, builtCount(t.pop));
+  const f = owner[t.i] >= 0 ? factions[owner[t.i]] : null, lush = f && f.golden > tick;
+  const edge = plots[Math.min(n, plots.length - 1)].r + 3, rr = mulberry32(t.i * 7919 + 1);
+  const band = 6 + Math.min(3, t.pop * .5) * 5, tints = lush ? FIELD_LUSH : FIELD_TINTS;
+  const want = Math.round(clamp(8 + t.pop * 9, 8, 60)), placed = [];
+  const furrows = new Path2D(), edges = new Path2D(), byTint = tints.map(() => new Path2D());
+  for (let tries = 0; tries < want * 4 && placed.length < want; tries++) {
+    const a = rr() * Math.PI * 2, r = edge + Math.pow(rr(), 1.4) * band, cx = h.x + Math.cos(a) * r, cy = h.y + Math.sin(a) * r * .85;
+    if (!onLand(cx, cy) || placed.some(([px, py]) => (px - cx) ** 2 + (py - cy) ** 2 < 30)) continue;
+    const hx = hexes[nearestHex(cx, cy)]; if (hx && hx.terrain === 'mountain') continue;
+    placed.push([cx, cy]);
+    const fw = 2.4 + rr() * 1.4, fh = 1.8 + rr() * 1, tilt = rr() * Math.PI;
+    const c = Math.cos(tilt), sn = Math.sin(tilt), corner = (u, v) => [cx + u * c - v * sn, cy + u * sn + v * c];
+    const P = [corner(-fw, -fh), corner(fw, -fh), corner(fw, fh), corner(-fw, fh)];
+    for (const path of [byTint[Math.floor(rr() * tints.length)], edges]) { path.moveTo(...P[0]); for (let q = 1; q < 4; q++) path.lineTo(...P[q]); path.closePath(); }
+    for (let l = -1; l <= 1; l++) { const [ax, ay] = corner(-fw * .8, l * fh * .5), [bx, by] = corner(fw * .8, l * fh * .5); furrows.moveTo(ax, ay); furrows.lineTo(bx, by); }
+  }
+  x.save();
+  tints.forEach((col, i) => { x.fillStyle = col; x.fill(byTint[i]); });
+  x.strokeStyle = 'rgba(90,70,40,.4)'; x.lineWidth = .35; x.stroke(edges);
+  x.strokeStyle = 'rgba(90,70,40,.28)'; x.lineWidth = .3; x.stroke(furrows);
+  x.restore();
+}
 function drawSettlement(x, t, arms) {
   const h = hexes[t.i], plots = plotsFor(t);
   const n = Math.min(plots.length, builtCount(t.pop)), peakN = Math.min(plots.length, builtCount(t.peak || t.pop));
   const pos = plots.map(p => plotPos(h, p, arms));
   x.save(); x.lineJoin = 'round';
-  // farmland: a patchwork of fields around any settlement that can feed itself
-  if (t.pop >= .6) {
-    const edge = plots[Math.min(n, plots.length - 1)].r, rr = mulberry32(t.i * 7919 + 1);
-    x.strokeStyle = 'rgba(110,88,46,.4)'; x.lineWidth = .45; x.beginPath();
-    for (let k = 0; k < Math.min(30, n * .45); k++) {
-      const a = rr() * Math.PI * 2, r = edge + 5 + rr() * 9 + t.pop * .8, cx = h.x + Math.cos(a) * r, cy = h.y + Math.sin(a) * r * .85;
-      if (!onLand(cx, cy)) continue;
-      const fw = 2.5 + rr() * 2.5, tilt = rr() * Math.PI;
-      for (let l = -2; l <= 2; l++) { const ox = Math.cos(tilt + 1.57) * l * 1.1, oy = Math.sin(tilt + 1.57) * l * 1.1; x.moveTo(cx + ox - Math.cos(tilt) * fw, cy + oy - Math.sin(tilt) * fw); x.lineTo(cx + ox + Math.cos(tilt) * fw, cy + oy + Math.sin(tilt) * fw); }
-    }
-    x.stroke();
-  }
   // districts abandoned since the town's height: the dotted outlines of empty houses
   if (peakN > n) {
     const ghost = new Path2D();
