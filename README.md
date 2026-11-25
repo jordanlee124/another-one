@@ -11,6 +11,7 @@ There is no player. You watch, follow a realm you care about, and come back late
 Open `index.html` in a browser. There is no build step and nothing to install. The page loads two typefaces from Google Fonts and falls back to Georgia when offline.
 
 - **Follow a realm:** click it on the map or its name in the chronicle.
+- **Zoom and move:** scroll or pinch to zoom up to 4×, drag to move, and double-click to zoom in. The buttons in the corner and the + − 0 and arrow keys do the same. Names stay sharp and more of them appear as you zoom in.
 - **Look back:** click an age on the timeline to see the map as it stood when that age began.
 - **Share a world:** **Share world** copies a link. Anyone who opens it watches the same world unfold from the same seed. Their own world is set aside, not erased.
 - **Seeds:** `index.html?seed=4242` always produces the same world and the same history.
@@ -18,6 +19,16 @@ Open `index.html` in a browser. There is no build step and nothing to install. T
 ## What it does
 
 **No two worlds share a shape.** Each seed picks a kind of world: a single continent, twin lands divided by a winding strait, a continent wrapped around an inland sea, or an archipelago. Mountains follow ridgelines, so they form ranges instead of blobs. Every sea, lake, mountain range, great forest and desert gets a name. Short dotted sea lanes link separate landmasses, so island realms can be reached and conquered. Ships sail the open water, and the occasional sea serpent lurks there.
+
+**Kingdoms have houses, faiths, governments and treasuries.**
+- *Dynasties:* every crown belongs to a named house with its own coat of arms. Neighbouring crowns marry. When a royal line dies out, a realm can pass by marriage to another kingdom, joining two crowns under one ruler, or the claim starts a succession war.
+- *Faiths:* faiths spread province by province. Provinces of another faith are restless and rebel along religious lines. Priests preach holy wars, rulers convert to the faith of their people, and a faith that grows too large splits in a Great Schism. The **Faiths** button redraws the map by belief.
+- *Kinds of rule:* kingdoms, merchant republics that elect a Doge every decade or so, and theocracies ruled by a High Priest. Revolutions topple crowns, priests seize power in hard times, and strongmen crown themselves.
+- *Wealth:* towns and roads fill the treasury, and armies empty it. Gold hires mercenaries. Long wars end in bankruptcy and deserting soldiers, and long peace in a golden age that glows around the capital.
+
+**Big events stop the clock.** When a great realm falls, a capital is sacked, a horde arrives or a new age begins, time slows to a crawl. The map darkens around the place, ink rings ripple out from it, and a title banner such as "The Fall of Asharene" writes itself across the map. Only one plays at a time, and the most important event wins.
+
+**The map remembers.** Villages are founded in fertile land at peace and every realm's seat is a settlement. Each one is a planned town, drawn the way old maps draw towns, on a plan that suits its site. Coastal towns build a grid squared to the shore with a jetty into the water; river towns run a long main street along the river; some seats of power are radial, with rings of houses, radiating streets and a star-shaped wall; and other towns use a grid. A grid town has its own street grid of square blocks around a market square, with a temple facing the square (and a palace in a great city). Houses with pitched roofs line every block, three to a side, in the town's own roofing. A town grows along its two main streets first, then fills the quarters between, block by block. When it becomes a city it walls in the blocks it holds, with towers at the corners and gatehouses where the main streets leave; harbour sides stay open to the sea. Strip fields on the same grid surround it, filling outward ring by ring and turning richer in a golden age. How fast it grows depends on its realm's prosperity: a full treasury, a golden age, busy roads, peace and being the capital. War, plague, famine and bankruptcy shrink it, and abandoned districts stay on the map as empty outlines. A settlement is put to the torch when its province falls. Roads join each realm's towns to its capital and cross borders only between allies. They are cut where fighting is fresh, and an old road fades slowly after it falls out of use. The bloodiest ground of each great war is marked with crossed swords and the battle's name, and stays on the map for a century and a half.
 
 **Wars show on the map.** Each side's army marches under its banner from the capital to the front and holds the line there. Smoke rises wherever a province changes hands, a sacked capital burns for two years, and a sickly haze circles the capital of a plague-stricken realm. Visitors who ask their system for reduced motion see all of this standing still.
 

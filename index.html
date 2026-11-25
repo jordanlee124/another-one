@@ -37,7 +37,14 @@
   button.danger { background: var(--blood); border-color: #c45a48; }
   main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; min-height: 0; }
   #mapwrap { position: relative; min-width: 0; min-height: 0; }
-  #map { position: absolute; inset: 0; width: 100%; height: 100%; cursor: pointer; display: block; }
+  #map { position: absolute; inset: 0; width: 100%; height: 100%; cursor: grab; display: block; touch-action: none; }
+  #map.dragging { cursor: grabbing; }
+  #zoomctl {
+    position: absolute; z-index: 2; display: flex; flex-direction: column; gap: 4px;
+    left: max(12px, env(safe-area-inset-left, 0px)); top: 12px;
+  }
+  #zoomctl button { width: 32px; height: 32px; padding: 0; font-size: 18px; line-height: 1; background: rgba(46,34,24,.9); }
+  #zoomctl button:disabled { opacity: .4; cursor: default; }
   #founding {
     position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 1;
     display: flex; gap: 12px; align-items: center; flex-wrap: wrap; justify-content: center;
@@ -131,6 +138,7 @@
       <option value="0.5">½×</option><option value="1" selected>1×</option><option value="2">2×</option>
       <option value="4">4×</option><option value="8">8×</option><option value="16">16×</option>
     </select>
+    <button id="faithmode" aria-pressed="false">Faiths</button>
     <button id="share">Share world</button>
     <button id="newworld">New world</button>
     <span id="confirmnew" class="confirm" hidden>
@@ -145,6 +153,11 @@
     <canvas id="map"></canvas>
     <div id="loading">The cartographer sharpens a quill…</div>
     <div id="banner" hidden></div>
+    <div id="zoomctl" role="group" aria-label="Map zoom">
+      <button id="zin" aria-label="Zoom in" title="Zoom in (+)">+</button>
+      <button id="zout" aria-label="Zoom out" title="Zoom out (−)">−</button>
+      <button id="zreset" aria-label="Show the whole map" title="Whole map (0)">⤢</button>
+    </div>
     <div id="founding" hidden>
       <span><i>The founding years pass quickly…</i> <span id="foundyr"></span></span>
       <button id="foundskip">Watch at normal speed</button>
@@ -158,7 +171,7 @@
   </div>
   <aside>
     <div id="card" hidden></div>
-    <p class="hint" id="hint">Click any realm on the map to follow its fortunes.</p>
+    <p class="hint" id="hint">Click any realm on the map to follow its fortunes. Scroll or pinch to zoom, and drag to move around.</p>
     <h2>The Chronicle</h2>
     <div id="chron"></div>
   </aside>
@@ -261,7 +274,7 @@ function warName(B) {
 // ---------- world state ----------
 let seed, worldName, gw, gh, F, thr, hexes, land, landCount, rivers, owner, distArr;
 let innerSea, archetype, features, lanes, seaBoxes = [], COLS, ROWS, X0, Y0, gOff, gHex, gW, liveFields, liveBorders, snapFields, snapBorders;
-let factions, wars, chron, eras, ruins, notes, tick, collapse, lastWarYear;
+let towns, roads, battlefields, factions, wars, chron, eras, ruins, notes, tick, collapse, lastWarYear;
 let paperC, inkC, washC, washTmp, landBig, snapWashC, labels, snapLabels;
 let labelBoxes = [], dirty = true, ovDirty = true, follow = null, viewEra = null, ovC;
 
@@ -841,6 +854,8 @@ function computeLabels(own, infoOf) {
 // ---------- factions ----------
 function styleOf(f, size = f.size) {
   if (f.kind === 'horde') return 'Horde';
+  if (f.gov === 'republic') return size >= 18 ? 'Republic' : 'Free City';
+  if (f.gov === 'theocracy') return size >= 18 ? 'Holy Realm' : 'Holy See';
   if (size >= 45) return 'Empire';
   if (size >= 18) return 'Kingdom';
   if (size >= 7) return f.kind === 'rebel' ? 'Free State' : 'Principality';
@@ -852,12 +867,18 @@ const fn = f => `<a class="fn" data-f="${f.id}" style="color:${dark(f)}">${f.nam
 function rulerName(r) {
   return `${r.title} ${r.given}${r.num > 1 ? ' ' + (ROMAN[r.num] || r.num) : ''}${r.epithet ? ' ' + r.epithet : ''}`;
 }
+function govTitle(f, fem) {
+  if (f.gov === 'republic') return 'Doge';
+  if (f.gov === 'theocracy') return fem ? 'High Priestess' : 'High Priest';
+  return f.kind === 'horde' ? 'Khan' : fem ? 'Queen' : 'King';
+}
 function newRuler(f, age) {
   const fem = f.kind !== 'horde' && R() < .4;
   const given = f.kind === 'horde' ? pick(KHANS) : pick(fem ? FEMALE : MALE);
   f.nameCounts[given] = (f.nameCounts[given] || 0) + 1;
-  return { given, fem, num: f.nameCounts[given], title: f.kind === 'horde' ? 'Khan' : fem ? 'Queen' : 'King',
-    age: age ?? rnd(18, 45), ability: Math.pow(R(), .8), start: year(), gained: 0, lost: 0, epithet: null, plague: false };
+  return { given, fem, num: f.gov === 'republic' ? 1 : f.nameCounts[given], title: govTitle(f, fem), house: f.house,
+    age: age ?? rnd(18, 45), ability: Math.pow(R(), .8), start: year(), gained: 0, lost: 0, epithet: null, plague: false,
+    term: f.gov === 'republic' ? Math.round(rnd(8, 12)) : 0 };
 }
 function newFaction(kind, capital, parent) {
   // pick a pigment nobody nearby is wearing, so neighbouring washes stay distinct
@@ -875,8 +896,14 @@ function newFaction(kind, capital, parent) {
   if (kind === 'horde') { f.traits.aggr = .8 + R() * .2; f.traits.ambit = .8 + R() * .2; f.horde = 2.2; }
   if (kind === 'rebel') { f.traits.aggr = .4 + R() * .5; }
   if (parent) f.fervor = 1.2;
+  // kind of rule, ruling house, faith and treasury
+  f.gov = kind === 'horde' ? 'horde' : parent && parent.gov === 'republic' && kind === 'rebel' ? 'republic' : 'kingdom';
+  f.house = f.gov === 'kingdom' || f.gov === 'horde' ? newHouse(kind === 'horde' ? 'clan' : null) : null;
+  f.faith = kind === 'horde' ? steppeFaith() : faithOf[capital] >= 0 ? faithOf[capital] : parent ? parent.faith : faiths.length ? 0 : newFaith();
+  f.gold = parent ? 0 : 5; f.peaceSince = year(); f.golden = 0; f.bankrupt = 0; f.revolYear = -99;
   f.ruler = newRuler(f, kind === 'realm' ? undefined : rnd(25, 45));
   factions.push(f);
+  seatTown(f);
   return f;
 }
 
@@ -920,6 +947,7 @@ function declareWar(X, Y, name, quiet) {
 }
 function endWar(w) {
   wars.splice(wars.indexOf(w), 1);
+  markBattlefield(w);
   const A = factions[w.a], B = factions[w.b];
   if (!A.alive || !B.alive) return;
   const until = tick + 12 * rnd(8, 20);
@@ -938,6 +966,276 @@ function ally(A, B) {
 
 // ---------- the monthly tick ----------
 function aliveList() { return factions.filter(f => f.alive); }
+
+// ---------- kingdoms: houses, faiths, kinds of rule, wealth ----------
+let houses, faiths, faithOf, marriages, faithMode = false;
+const TINCT = ['#9b2c24', '#2c4a8b', '#2f6b3a', '#5a2d6b', '#2a2420'], METAL = ['#d9b44a', '#ece6d4'];
+const CHARGES = ['chevron', 'bend', 'cross', 'saltire', 'pale', 'fess', 'chief', 'roundel', 'star'];
+const HOUSE_END = ['ett', 'ard', 'in', 'ow', 'ys', 'arr', 'ane', 'oc', 'ell', 'ric', 'mont', 'by'];
+function newHouse(kind) {
+  let name = '';
+  for (let k = 0; k < 30; k++) { name = pick(SYL_A) + pick(HOUSE_END); if (!houses.some(h => h.name === name)) break; }
+  houses.push({ id: houses.length, name, field: pick(TINCT), metal: pick(METAL), charge: pick(CHARGES), founded: year(), clan: kind === 'clan' });
+  return houses.length - 1;
+}
+const DEITIES = ['Aurum', 'Vael', 'Ithra', 'Orvan', 'the Lantern', 'the Mother', 'the Twin Moons', 'the Ash Tree', 'the Deep', 'Sarn', 'the Hearth'];
+const CREEDS = ['Sunward', 'Ashen', 'Silver', 'Twelvefold', 'Lantern', 'Hollow', 'Thorn'];
+const FAITH_COLORS = ['#d1a94c', '#5f86b0', '#b5644f', '#6f9e62', '#9473ab', '#c98a52', '#4f9e95', '#b0657f', '#8a8f44'];
+function newFaith(parent, forced) {
+  const used = new Set(faiths.filter(f => f.alive).map(f => f.color));
+  let name = forced;
+  // every faith gets its own god or creed, never one another faith already claims
+  const taken = w => faiths.some(f => f.name.endsWith(w) || f.name.includes(`the ${w} Creed`));
+  for (let k = 0; k < 40 && !forced; k++) {
+    const r = R(), d = pick(DEITIES), c = pick(CREEDS);
+    if (r < .35 && !taken(d)) { name = `the Faith of ${d}`; break; }
+    if (r < .65 && r >= .35 && !taken(c)) { name = `the ${c} Creed`; break; }
+    if (r < .85 && r >= .65 && !taken(d)) { name = `the Way of ${d}`; break; }
+    if (r >= .85) { name = `the Church of ${placeName(false)}`; break; }
+  }
+  if (!name) name = `the Church of ${placeName(false)}`;
+  faiths.push({ id: faiths.length, name, color: FAITH_COLORS.find(c => !used.has(c)) || pick(FAITH_COLORS), founded: year(), parent: parent ?? -1, alive: true });
+  return faiths.length - 1;
+}
+function steppeFaith() {
+  const s = faiths.find(f => f.alive && f.name === 'the Faith of the Sky Father');
+  return s ? s.id : newFaith(-1, 'the Faith of the Sky Father');
+}
+function marry(A, B) {
+  marriages.push({ a: A.id, b: B.id, year: year() });
+  if (marriages.length > 80) marriages.shift();
+  event(`A royal wedding binds House ${houses[A.house].name} of ${fn(A)} to House ${houses[B.house].name} of ${fn(B)}.`, [A, B], lvl(sig(A, 1.5) && sig(B, 1.5)));
+  if (!A.allies.has(B.id) && R() < .4) ally(A, B);
+}
+// faiths spread province by province; rulers follow their people; great faiths split
+function faithYear() {
+  for (const h of land) {
+    const o = owner[h.i], cur = faithOf[h.i];
+    if (o >= 0) { const f = factions[o]; if (cur !== f.faith && R() < (f.gov === 'theocracy' ? .06 : .03)) { faithOf[h.i] = f.faith; continue; } }
+    if (R() < .008) { const n = h.nb[Math.floor(R() * h.nb.length)]; if (hexes[n].land && faithOf[n] >= 0 && faithOf[n] !== cur) faithOf[h.i] = faithOf[n]; }
+  }
+  const total = new Map(), byRealm = new Map();
+  for (const h of land) {
+    const fa = faithOf[h.i]; total.set(fa, (total.get(fa) || 0) + 1);
+    const o = owner[h.i]; if (o < 0) continue;
+    let m = byRealm.get(o); if (!m) byRealm.set(o, m = new Map()); m.set(fa, (m.get(fa) || 0) + 1);
+  }
+  for (const f of aliveList()) {
+    const m = byRealm.get(f.id); if (!m || f.size < 4 || f.kind === 'horde') continue;
+    let top = f.faith, tc = 0; for (const [fa, c] of m) if (c > tc) { tc = c; top = fa; }
+    if (top !== f.faith && tc / f.size > .6 && R() < .03) {
+      f.faith = top;
+      event(`${rulerName(f.ruler)} of ${fn(f)} embraces ${faiths[top].name}, the faith of the realm's people.`, [f], lvl(sig(f)));
+    }
+  }
+  for (const fa of faiths) {
+    if (!fa.alive) continue;
+    const n = total.get(fa.id) || 0;
+    if (!n && !aliveList().some(f => f.faith === fa.id)) { fa.alive = false; continue; }
+    if (n / landCount > .4 && year() - fa.founded > 60 && R() < .05) schism(fa);
+  }
+}
+function schism(fa) {
+  const cands = aliveList().filter(f => f.faith === fa.id && f.size >= 8).sort((a, b) => b.size - a.size);
+  const A = cands[1] || cands[0]; if (!A) return;          // usually the faith's second power breaks away
+  const nf = newFaith(fa.id); A.faith = nf; fa.founded = year();
+  for (const h of land) if (owner[h.i] === A.id && faithOf[h.i] === fa.id && R() < .7) faithOf[h.i] = nf;
+  event(`The Great Schism: ${fn(A)} breaks with ${fa.name} and proclaims ${faiths[nf].name}.`, [A], 'big');
+  moment(75, hexes[A.capital], 'The Great Schism', `${A.name} breaks with ${fa.name}`);
+  dirty = true;
+}
+// crowns fall to councils, priests seize power, strongmen crown themselves
+function ruleYear() {
+  for (const f of aliveList()) {
+    if (f.kind === 'horde' || f.size < 6 || year() - f.revolYear < 40) continue;
+    const towns_ = towns.filter(t => !t.ruined && t.pop >= TOWN && owner[t.i] === f.id).length;
+    const troubled = f.bankrupt > tick || f.lostCap > tick || f.ruler.ability < .25;
+    if (f.gov === 'kingdom' && towns_ >= 3 && troubled && R() < .1) setGov(f, 'republic');
+    else if (f.gov === 'kingdom' && (f.plague > 0 || f.lostCap > tick) && R() < .025) setGov(f, 'theocracy');
+    else if (f.gov === 'republic' && ((f.nWars > 0 && f.lostCap > tick) || R() < .008)) setGov(f, 'kingdom');
+    else if (f.gov === 'theocracy' && R() < .01) setGov(f, 'kingdom');
+  }
+}
+function setGov(f, gov) {
+  const from = f.gov, old = f.ruler;
+  old.end = year(); if (!old.epithet) old.epithet = epithetFor(old); f.rulers.push(old);
+  f.gov = gov; f.revolYear = year();
+  f.house = gov === 'kingdom' ? newHouse() : null;
+  f.ruler = newRuler(f, rnd(30, 50));
+  const big = sig(f), h = hexes[f.capital];
+  if (gov === 'republic') {
+    event(`Revolution in ${fn(f)}: the crown is cast down and the Republic of ${f.name} proclaimed. The councils elect ${rulerName(f.ruler)}.`, [f], lvl(big, 'big'));
+    if (big) { note(h, `Here the crown of ${f.name} fell`); moment(65, h, 'Revolution', `the Republic of ${f.name} is proclaimed`); }
+  } else if (gov === 'theocracy') {
+    event(`The priests of ${faiths[f.faith].name} take power in ${fn(f)}; ${rulerName(f.ruler)} rules in the name of the faith.`, [f], lvl(big, 'big'));
+    if (big) moment(60, h, 'The Priests Take Power', `${f.name} becomes a holy realm`);
+  } else if (from === 'republic') {
+    event(`A strongman seizes ${fn(f)} and is crowned ${rulerName(f.ruler)}, first of House ${houses[f.house].name}.`, [f], lvl(big, 'big'));
+    if (big) moment(55, h, 'A Crown Seized', `the Republic of ${f.name} is no more`);
+  } else {
+    event(`The lords of ${fn(f)} cast off the priests and crown ${rulerName(f.ruler)} of House ${houses[f.house].name}.`, [f], lvl(big));
+  }
+  dirty = true;
+}
+// towns and roads fill the treasury; armies empty it
+function wealthYear() {
+  const townPop = new Map(), roadN = new Map();
+  for (const t of towns) { if (t.ruined) continue; const o = owner[t.i]; if (o >= 0) townPop.set(o, (townPop.get(o) || 0) + t.pop); }
+  for (const r of roads.values()) { if (!r.used) continue; const o = owner[r.a]; if (o >= 0) roadN.set(o, (roadN.get(o) || 0) + 1); }
+  for (const f of aliveList()) {
+    const tw = townPop.get(f.id) || 0;
+    let income = tw * 1.2 + (roadN.get(f.id) || 0) * .4 + f.size * .05;
+    if (f.gov === 'republic') income *= 1.6;
+    if (f.golden > tick) income *= 1.3;
+    if (f.plague > 0) income *= .7;
+    const upkeep = f.kind === 'horde' ? 0 : Math.pow(f.size, 1.15) * .05 + (f.nWars ? f.size * .04 * Math.min(f.nWars, 3) : 0);
+    f.gold = Math.min(f.size * 6 + 20, f.gold + income - upkeep);
+    if (f.nWars) f.peaceSince = year();
+    if (f.gold < -(f.size * .8 + 8) && f.bankrupt <= tick) {
+      f.bankrupt = tick + 36; f.gold = 0;
+      event(`${fn(f)} cannot pay its soldiers. The treasury is empty, and the unpaid companies desert.`, [f], lvl(sig(f, 1.5)));
+      if (sig(f, 1.5)) moment(45, hexes[f.capital], 'Bankrupt', `${f.name} cannot pay its armies`);
+    }
+    const nTowns = towns.filter(t => !t.ruined && t.pop >= TOWN && owner[t.i] === f.id).length;
+    if (f.golden <= tick && f.nWars === 0 && year() - f.peaceSince >= 6 && f.gold > f.size * 1.5 && nTowns >= 2 && R() < .4) {
+      f.golden = tick + 12 * 20;
+      event(`A golden age dawns in ${fn(f)}: full granaries, busy roads and new towers in every city.`, [f], lvl(sig(f)));
+      if (sig(f, 1.5)) moment(45, hexes[f.capital], 'A Golden Age', `in ${f.name}`);
+    }
+  }
+}
+// heraldry for the realm card
+function armsSVG(h, w = 22) {
+  if (!h) return '';
+  const m = h.metal, id = `arms${h.id}`;
+  const charge = {
+    chevron: `<path d="M2 21 L12 11 L22 21 L22 16 L12 6 L2 16Z" fill="${m}"/>`,
+    bend: `<path d="M2 2 L8 2 L22 18 L22 25Z" fill="${m}"/>`,
+    cross: `<rect x="10" y="2" width="4" height="26" fill="${m}"/><rect x="2" y="10" width="20" height="4" fill="${m}"/>`,
+    saltire: `<path d="M3 3 L21 25 M21 3 L3 25" stroke="${m}" stroke-width="4"/>`,
+    pale: `<rect x="9" y="2" width="6" height="26" fill="${m}"/>`,
+    fess: `<rect x="2" y="10" width="20" height="6" fill="${m}"/>`,
+    chief: `<rect x="2" y="2" width="20" height="8" fill="${m}"/>`,
+    roundel: `<circle cx="12" cy="13" r="5" fill="${m}"/>`,
+    star: `<path d="M12 6 L14 11 L19.5 11 L15 14.5 L17 20 L12 16.5 L7 20 L9 14.5 L4.5 11 L10 11Z" fill="${m}"/>`,
+  }[h.charge];
+  return `<svg width="${w}" height="${Math.round(w * 1.15)}" viewBox="0 0 24 28" style="vertical-align:-6px" aria-hidden="true"><clipPath id="${id}"><path d="M2 2 H22 V14 C22 21 17 25 12 27 C7 25 2 21 2 14 Z"/></clipPath><g clip-path="url(#${id})"><rect width="24" height="28" fill="${h.field}"/>${charge}</g><path d="M2 2 H22 V14 C22 21 17 25 12 27 C7 25 2 21 2 14 Z" fill="none" stroke="#3a2b1c" stroke-width="1.2"/></svg>`;
+}
+const govWord = f => ({ kingdom: f.size >= 45 ? 'empire' : 'monarchy', republic: 'merchant republic', theocracy: 'theocracy', horde: 'horde' }[f.gov] || 'monarchy');
+const treasuryWord = f => f.gold > f.size * 3 ? 'overflowing' : f.gold > f.size ? 'comfortable' : f.gold > 0 ? 'lean' : 'in debt';
+
+// ---------- the map remembers: towns, roads, battlefields ----------
+const TOWN = 1, CITY = 2.5, GREAT = 6;            // population thresholds: village < town < city < great city
+const BUILDINGS_PER_POP = 14;                      // how many drawn buildings each unit of population fills
+const townAt = i => towns.find(t => t.i === i && !t.ruined);
+const kindOf = t => t.pop >= GREAT ? 'great' : t.pop >= CITY ? 'city' : t.pop >= TOWN ? 'town' : 'village';
+const builtCount = pop => Math.round(pop * BUILDINGS_PER_POP) + 2;
+// a straight road needs dry land the whole way
+function overLand(a, b) {
+  const d = Math.hypot(b.x - a.x, b.y - a.y);
+  for (let s = 0; s <= d; s += 10) {
+    const px = a.x + (b.x - a.x) * s / d, py = a.y + (b.y - a.y) * s / d;
+    if (F[clamp(Math.round(py / GS), 0, gh - 1) * gw + clamp(Math.round(px / GS), 0, gw - 1)] < thr) return false;
+  }
+  return true;
+}
+function settlements() {
+  const al = aliveList();
+  // villages are founded in fertile land at peace, well apart from other settlements
+  const live = towns.filter(t => !t.ruined || year() - t.ruinYear < 50);
+  if (towns.filter(t => !t.ruined).length < landCount / 22) for (const f of al) {
+    if (f.size < 5 || f.nWars > 1 || R() > (f.nWars ? .06 : .15)) continue;
+    let best = null, bs = -1;
+    for (let k = 0; k < 8; k++) {
+      const h = land[Math.floor(R() * land.length)];
+      if (owner[h.i] !== f.id || h.terrain === 'mountain' || h.food < 2.5) continue;
+      const c = hexes[f.capital];
+      if (Math.hypot(h.x - c.x, h.y - c.y) < 75 || live.some(t => Math.hypot(hexes[t.i].x - h.x, hexes[t.i].y - h.y) < 75)) continue;
+      if (h.food > bs) { bs = h.food; best = h; }
+    }
+    if (best) { const t = { i: best.i, name: placeName(), pop: .3, peak: .3, founded: year() }; towns.push(t); live.push(t); dirty = true; }
+  }
+  // towns grow in peace and wither in war, plague and famine
+  for (const t of towns) {
+    if (t.ruined) continue;
+    const o = owner[t.i], f = o >= 0 ? factions[o] : null, h = hexes[t.i], was = kindOf(t);
+    const before = builtCount(t.pop);
+    if (!f) t.pop *= .97;
+    else if (f.plague > 0) t.pop *= .94;
+    else if (f.famine > 0) t.pop *= .97;
+    else {
+      // prosperity: a full treasury, a golden age, busy roads, peace and being the seat of a realm
+      const isSeat = f.capital === t.i, nRoads = [...roads.values()].filter(r => r.used && (r.a === t.i || r.b === t.i)).length;
+      const prosper = Math.max(.2, 1 + clamp(f.gold / (f.size * 3 + 10), -.6, .6) + (f.golden > tick ? .9 : 0) + nRoads * .2 + (isSeat ? .6 : 0) - (f.bankrupt > tick ? .5 : 0));
+      const room = 3 + h.food * 1.4 + (isSeat ? 3 : 0) + (h.river ? 1 : 0) + (h.coast ? 1 : 0);    // how big this place can ever get
+      t.pop += h.food * .012 * prosper * (f.nWars > 0 ? .3 : 1) * Math.max(0, 1 - t.pop / room);
+      if (f.bankrupt > tick) t.pop *= .985;
+    }
+    t.peak = Math.max(t.peak || 0, t.pop);
+    if (builtCount(t.pop) !== before) ovDirty = true;
+    const now = kindOf(t);
+    if (now !== was && f) {
+      dirty = true;
+      if (now === 'city' && was === 'town') event(`${t.name} in ${fn(f)} raises its walls: a town no longer, but a city.`, [f], 'minor');
+      if (now === 'great') event(`${t.name} in ${fn(f)} has grown into a great city, its suburbs spilling far beyond the old walls.`, [f], lvl(sig(f)));
+    }
+  }
+  towns = towns.filter(t => !t.ruined || year() - t.ruinYear < 150);
+  // roads join a realm's settlements in a network, and cross borders only between allies
+  const active = new Map();
+  const nodesOf = f => [hexes[f.capital], ...towns.filter(t => !t.ruined && t.pop >= TOWN && owner[t.i] === f.id).map(t => hexes[t.i])];
+  const link = (a, b) => { if (a.i === b.i) return; const k = Math.min(a.i, b.i) + '-' + Math.max(a.i, b.i); active.set(k, [Math.min(a.i, b.i), Math.max(a.i, b.i)]); };
+  const nodes = new Map(al.map(f => [f.id, nodesOf(f)]));
+  for (const f of al) {
+    const ns = nodes.get(f.id); if (ns.length < 2) continue;
+    const inTree = [ns[0]], rest = ns.slice(1);
+    while (rest.length) {
+      let bd = Infinity, bi = -1, bj = -1;
+      for (let i = 0; i < inTree.length; i++) for (let j = 0; j < rest.length; j++) {
+        const d = Math.hypot(inTree[i].x - rest[j].x, inTree[i].y - rest[j].y); if (d < bd) { bd = d; bi = i; bj = j; }
+      }
+      const b = rest.splice(bj, 1)[0];
+      if (bd <= 280 && overLand(inTree[bi], b)) link(inTree[bi], b);
+      inTree.push(b);
+    }
+  }
+  for (const f of al) for (const id of f.allies) {
+    if (id < f.id || !factions[id].alive) continue;
+    let bd = 240, pair = null;
+    for (const a of nodes.get(f.id)) for (const b of nodes.get(id) || []) { const d = Math.hypot(a.x - b.x, a.y - b.y); if (d < bd && overLand(a, b)) { bd = d; pair = [a, b]; } }
+    if (pair) link(pair[0], pair[1]);
+  }
+  // old roads fade slowly after they stop being used, so the map keeps a trace of past peace
+  for (const [k, ends] of active) { const r = roads.get(k); roads.set(k, { a: ends[0], b: ends[1], age: Math.min(200, (r ? r.age : 0) + 1), used: true }); }
+  for (const [k, r] of roads) if (!active.has(k)) { r.used = false; r.age -= 2; if (r.age <= 0) roads.delete(k); }
+}
+// a province taken by storm may see its town sacked
+function sackTown(t, X, Y) {
+  if (R() > .5) return;
+  const was = kindOf(t);
+  t.pop *= .35; dirty = true;
+  if (was === 'city' || was === 'great') {
+    event(`${fn(X)} puts the city of ${t.name} to the torch.`, [X, Y], lvl(sig(Y, .5) || sig(X), 'big'));
+    note(hexes[t.i], `Here ${t.name} burned`);
+    if (sig(Y, .5) || sig(X)) moment(40, hexes[t.i], `${t.name} Burns`, `put to the torch by ${X.name}`);
+  }
+  fires.push({ i: t.i, until: tick + 18 });
+  if (t.pop < .2) { t.ruined = true; t.ruinYear = year(); }
+}
+// the bloodiest ground of a long war is remembered by name
+function markBattlefield(w) {
+  // only the great wars leave a named field, and rarely enough that each one is remembered for a century
+  const last = battlefields.length ? battlefields[battlefields.length - 1].year : -99;
+  if (!w.hot || w.ga + w.gb < 25 || (year() - last < 12 && w.ga + w.gb < 60)) return;
+  let bi = -1, bc = 0;
+  for (const k in w.hot) if (w.hot[k] > bc) { bc = w.hot[k]; bi = +k; }
+  const h = hexes[bi]; if (!h) return;
+  const near = towns.filter(t => Math.hypot(hexes[t.i].x - h.x, hexes[t.i].y - h.y) < 100).sort((a, b) => Math.hypot(hexes[a.i].x - h.x, hexes[a.i].y - h.y) - Math.hypot(hexes[b.i].x - h.x, hexes[b.i].y - h.y))[0];
+  let name = near ? `Battle of ${near.name}` : `Battle of ${pick(['the Fords', 'the Ridge', 'the Long Field', 'the Marsh', 'the Burnt Mill', 'the Crossroads', 'the Standing Stones', 'the Red Brook'])}`;
+  if (battlefields.some(b => b.name === name)) name = `Battle of ${placeName(false)}`;
+  battlefields.push({ x: h.x, y: h.y, name, year: year(), war: w.name });
+  if (battlefields.length > 10) battlefields.shift();
+}
 
 function computeStats() {
   const al = aliveList();
@@ -964,16 +1262,29 @@ function computeStats() {
     // big realms are slow, corrupt and stretched thin: power falls off sharply with share of the map
     const share = f.size / landCount, sprawl = 1 / (1 + (share * 2.3) ** 2);
     f.power = Math.pow(f.food, .8) * sprawl * (.7 + .6 * f.ruler.ability) * (f.plague > 0 ? .55 : 1) * (f.famine > 0 ? .7 : 1) * (1 + f.horde + f.fervor);
+    // gold hires mercenaries; an empty treasury means unpaid, deserting soldiers
+    // (a great empire's gold buys less: its armies are spread thin across too many frontiers)
+    const gb = clamp(f.gold / (f.size * 3 + 10), -.3, .25);
+    f.power *= (1 + (gb > 0 ? gb * (1 - clamp(share * 2.5, 0, .9)) : gb)) * (f.bankrupt > tick ? .7 : 1);
     if (f.size > f.peak) { f.peak = f.size; f.peakYear = year(); }
   }
 }
 function relocateCapital(f) {
   let best = -1, bs = -1;
   for (const h of land) if (owner[h.i] === f.id) {
-    const s = h.food + h.nb.filter(n => owner[n] === f.id).length + R();
+    const s = h.food + h.nb.filter(n => owner[n] === f.id).length + (townAt(h.i) ? 4 : 0) + R();
     if (s > bs) { bs = s; best = h.i; }
   }
-  if (best >= 0) f.capital = best;
+  if (best >= 0) { f.capital = best; seatTown(f); }
+}
+// a realm's seat is always a settlement; the old seat keeps its town when the capital moves
+function seatTown(f) {
+  if (!towns || townAt(f.capital)) return;
+  // a seat close to an existing town simply governs from there rather than founding another
+  const c = hexes[f.capital];
+  if (towns.some(t => !t.ruined && Math.hypot(hexes[t.i].x - c.x, hexes[t.i].y - c.y) < 55)) return;
+  towns = towns.filter(t => !(t.i === f.capital && t.ruined));
+  towns.push({ i: f.capital, name: placeName(), pop: .6, peak: .6, founded: year(), seat: true });
 }
 
 function expansion() {
@@ -1004,11 +1315,13 @@ function attack(X, Y, w, key) {
     if (R() < .3 * px / (px + py * def)) {
       owner[t.i] = X.id; t.lastCap = tick; w[key]++; X.ruler.gained++; Y.ruler.lost++; dirty = true;
       addPuff(t);
+      w.hot = w.hot || {}; w.hot[t.i] = (w.hot[t.i] || 0) + 1;
+      const town = townAt(t.i); if (town) sackTown(town, X, Y);
       if (t.i === Y.capital) {
         fires.push({ i: t.i, until: tick + 24 });
         Y.lostCap = tick + 36; relocateCapital(Y);
         event(`${fn(X)} storms and sacks the capital of ${fn(Y)}. ${rulerName(Y.ruler)} flees.`, [X, Y], lvl(sig(Y), 'big'));
-        if (sig(Y)) note(t, `Here ${X.name} sacked the seat of ${Y.name}`);
+        if (sig(Y)) { note(t, `Here ${X.name} sacked the seat of ${Y.name}`); moment(60, t, `The Sack of ${Y.name}`, `${X.name} storms the capital`); }
       }
     }
   }
@@ -1019,11 +1332,13 @@ function revolts() {
   const over = new Map(al.map(f => {
     const share = f.size / landCount;
     return [f.id, share * 1.5 + (share > .28 ? .4 : 0) + (f.plague > 0 ? .25 : 0) + (f.lostCap > tick ? .25 : 0)
-      + (f.nWars > 1 ? .1 : 0) - f.ruler.ability * .35 - f.traits.loyal * .1];
+      + (f.nWars > 1 ? .1 : 0) + (f.bankrupt > tick ? .2 : 0) - f.ruler.ability * .35 - f.traits.loyal * .1];
   }));
   for (const h of land) {
     const o = owner[h.i]; if (o < 0) continue;
-    const d = distArr[h.i], u = (d < 0 ? 1.4 : d * .05) + over.get(o);
+    // provinces that keep another faith are restless, the more so under priests
+    const f = factions[o], heretic = faithOf[h.i] !== f.faith ? (f.gov === 'theocracy' ? .28 : .18) : 0;
+    const d = distArr[h.i], u = (d < 0 ? 1.4 : d * .05) + over.get(o) + heretic;
     const m = max.get(o); if (!m || u > m.u) max.set(o, { u, h });
   }
   for (const f of al) {
@@ -1046,7 +1361,7 @@ function revolt(f, seedTile, maxU, over) {
   const r = newFaction('rebel', seedTile.i, f);
   for (const i of region) owner[i] = r.id;
   r.size = region.length; dirty = true;
-  event(`The far provinces of ${fn(f)} rise in revolt. ${rulerName(r.ruler)} is acclaimed lord of ${fn(r)}.`, [f, r], lvl(sig(f, 1.5) && region.length >= 8));
+  event(`The far provinces of ${fn(f)}${r.faith !== f.faith ? `, faithful to ${faiths[r.faith].name},` : ''} rise in revolt. ${rulerName(r.ruler)} is acclaimed lord of ${fn(r)}.`, [f, r], lvl(sig(f, 1.5) && region.length >= 8));
   if (sig(f, 1.5) && region.length >= 8) note(seedTile, `Here ${r.name} rose against ${f.name}`);
   declareWar(r, f, `the Revolt of ${r.name}`, true);
 }
@@ -1056,6 +1371,7 @@ function rulers() {
     const r = f.ruler; r.age += 1 / 12;
     if (f.plague > 0) r.plague = true;
     if (R() < .0018 + Math.max(0, r.age - 42) ** 2 * .00004 + (f.plague > 0 ? .002 : 0)) succession(f);
+    else if (f.gov === 'republic' && year() - r.start >= r.term && tick % 12 === 0) election(f);
   }
 }
 function epithetFor(r) {
@@ -1068,13 +1384,44 @@ function epithetFor(r) {
   if (r.ability > .82) return 'the Wise';
   return pick(['the Just', 'the Quiet', 'the Pious', 'the Fat', 'the Grey', 'the Fair', 'the Stern', 'the Kind', 'the Cruel', 'the Fowler']);
 }
+function election(f) {
+  const old = f.ruler; old.end = year(); f.rulers.push(old);
+  f.ruler = newRuler(f, rnd(35, 60));
+  event(`The councils of ${fn(f)} elect ${rulerName(f.ruler)} to succeed ${rulerName(old)}.`, [f], 'minor');
+  // a disputed election can split a great republic just as a disputed succession splits a kingdom
+  if (f.size >= 10 && R() < .04 + (f.size / landCount) * .9) civilWar(f);
+}
 function succession(f) {
   const old = f.ruler, reign = year() - old.start;
   old.end = year(); old.epithet = epithetFor(old); f.rulers.push(old);
+  if (f.gov === 'republic') { f.ruler = newRuler(f, rnd(35, 60)); event(`${rulerName(old)} of ${fn(f)} dies in office; the councils elect ${rulerName(f.ruler)}.`, [f], 'minor'); return; }
+  // sometimes a royal line simply ends
+  if (f.gov === 'kingdom' && f.size >= 4 && R() < .08 + (old.age > 60 ? .05 : 0) && lineFails(f)) return;
   const heir = newRuler(f, rnd(14, 40)); f.ruler = heir;
   event(`${rulerName(old)} of ${fn(f)} dies after ${reign < 1 ? 'mere months' : reign + ' years'} on the throne; ${rulerName(heir)} succeeds.`, [f], lvl(sig(f, 1.5)));
   const share = f.size / landCount;
-  if (f.size >= 10 && R() < .05 + (1 - heir.ability) * .22 + share * .9) civilWar(f);
+  if (f.size >= 10 && R() < (.05 + (1 - heir.ability) * .22 + share * .9) * (f.gov === 'theocracy' ? .8 : 1)) civilWar(f);
+}
+// a dead line passes the crown by marriage, or starts a war over the claim
+function lineFails(f) {
+  const kin = marriages.filter(m => (m.a === f.id || m.b === f.id) && year() - m.year < 80)
+    .map(m => factions[m.a === f.id ? m.b : m.a]).filter(A => A.alive && A.gov === 'kingdom' && !warBetween(A, f)).sort((a, b) => b.size - a.size);
+  const A = kin[0], gone = houses[f.house];
+  if (A && (A.size + f.size) / landCount < .33 && R() < .65) {
+    const big = sig(f, .5) || sig(A);
+    event(`House ${gone.name} dies out in ${fn(f)}. By right of marriage, ${rulerName(A.ruler)} of ${fn(A)} inherits the crown: two realms, one ruler.`, [f, A], lvl(big, 'big'));
+    if (big) { note(hexes[f.capital], `${f.name} passed to ${A.name} by marriage`); moment(85, hexes[f.capital], 'Two Crowns, One King', `${A.name} inherits ${f.name}`); }
+    for (const h of land) if (owner[h.i] === f.id) owner[h.i] = A.id;
+    f.absorbedBy = A.id; dirty = true;
+    return true;
+  }
+  f.house = newHouse(); f.ruler = newRuler(f, rnd(20, 45));
+  event(`House ${gone.name} dies out in ${fn(f)}; the lords raise ${rulerName(f.ruler)} of House ${houses[f.house].name}.`, [f], lvl(sig(f)));
+  if (A && R() < .7) {
+    const w = declareWar(A, f, `the War of the ${f.name} Succession`, true);
+    if (w) event(`${fn(A)} claims the throne of ${fn(f)} by marriage: ${w.name} begins.`, [A, f], lvl(sig(A, .5) && sig(f, .5), 'big'));
+  }
+  return true;
 }
 function civilWar(f) {
   let seat = -1, sd = -1;
@@ -1087,9 +1434,9 @@ function civilWar(f) {
   for (const h of land) if (owner[h.i] === f.id && h.i !== f.capital && dB[h.i] >= 0 && (distArr[h.i] < 0 || dB[h.i] < distArr[h.i])) { owner[h.i] = p.id; n++; }
   p.size = n; dirty = true;
   const name = `the War of the ${f.name} Succession`;
-  event(`The succession in ${fn(f)} is disputed. ${rulerName(p.ruler)} seizes the western halls and proclaims ${fn(p)}: ${name} begins.`
+  event(`The ${f.gov === 'republic' ? 'election' : 'succession'} in ${fn(f)} is disputed. ${rulerName(p.ruler)} seizes the western halls and proclaims ${fn(p)}: ${name} begins.`
     .replace('western', pick(['western', 'eastern', 'northern', 'southern', 'outer'])), [f, p], lvl(sig(f), 'big'));
-  if (sig(f)) note(hexes[seat], `Here a pretender raised ${p.name}`);
+  if (sig(f)) { note(hexes[seat], `Here a pretender raised ${p.name}`); if (sig(f, 1.5)) moment(55, hexes[seat], `A Crown Divided`, `the War of the ${f.name} Succession`); }
   declareWar(p, f, name, true);
 }
 
@@ -1104,7 +1451,7 @@ function diplomacy() {
         if (X.traits.loyal < .45 && X.power > Y.power * 1.6 && R() < .12 * X.traits.ambit) {
           const w = declareWar(X, Y, null, true);
           if (w) event(`Faithless ${fn(X)} breaks its oaths and falls upon its ally ${fn(Y)}: ${w.name} begins.`, [X, Y], lvl(sig(X, .5) && sig(Y, .5), 'big'));
-          if (w && sig(X, .5) && sig(Y, .5)) note(hexes[Y.capital], `${X.name} betrayed its ally here`);
+          if (w && sig(X, .5) && sig(Y, .5)) { note(hexes[Y.capital], `${X.name} betrayed its ally here`); moment(50, hexes[Y.capital], `Betrayal`, `${X.name} turns on its ally ${Y.name}`); }
           break;
         }
       }
@@ -1114,7 +1461,13 @@ function diplomacy() {
       if ((X.truce.get(Y.id) || 0) > tick) continue;
       const ratio = X.power / Math.max(.1, Y.power), share = Y.size / landCount;
       let p = .005 + X.traits.aggr * .06 * clamp(ratio - .9, 0, 1.5) + (share > .28 ? .12 : 0) + (X.horde > .3 ? .3 : 0);
-      if (R() < p) { declareWar(X, Y); break; }
+      // faith divides, priests preach holy war, merchants prefer trade, and a rich neighbour is a tempting one
+      const holy = X.faith !== Y.faith;
+      p *= holy ? 1.4 : .85;
+      if (holy && X.gov === 'theocracy') p += .04;
+      if (X.gov === 'republic') p *= .5;
+      p *= 1 + clamp(Y.gold / (Math.abs(X.gold) + 10), 0, 1) * .3;
+      if (R() < p) { declareWar(X, Y, holy && (X.gov === 'theocracy' || R() < .3) ? `the Holy War against ${Y.name}` : null); break; }
     }
   }
   // coalitions against whoever is biggest
@@ -1128,7 +1481,9 @@ function diplomacy() {
   }
   for (const A of al) for (const [bid] of A.fronts) {
     const B = factions[bid];
-    if (B.id > A.id && !A.allies.has(B.id) && !warBetween(A, B) && A.traits.loyal > .55 && B.traits.loyal > .55 && R() < .02) ally(A, B);
+    if (B.id > A.id && !A.allies.has(B.id) && !warBetween(A, B) && ((A.traits.loyal > .55 && B.traits.loyal > .55) || A.faith === B.faith) && R() < .02) ally(A, B);
+    // royal marriages between neighbouring crowns
+    if (B.id > A.id && A.gov === 'kingdom' && B.gov === 'kingdom' && !warBetween(A, B) && R() < (A.allies.has(B.id) ? .06 : .02)) marry(A, B);
   }
   // peace
   for (const w of wars.slice()) {
@@ -1143,7 +1498,7 @@ function disasters() {
   if (!al.length) return;
   const bySize = () => { let s = al.reduce((a, f) => a + f.size ** 1.3, 0) * R(); for (const f of al) { s -= f.size ** 1.3; if (s <= 0) return f; } return al[0]; };
   if (R() < 1 / 45) {
-    const f = bySize(); if (f.plague <= 0) { f.plague = 12 * rnd(3, 6); event(`${pick(['The Grey Sickness', 'The Sweating Plague', 'A red pestilence', 'The Coughing Death'])} comes to ${fn(f)}. The dead are carted out by night.`, [f], 'big'); note(hexes[f.capital], `Plague in ${f.name}`); }
+    const f = bySize(); if (f.plague <= 0) { f.plague = 12 * rnd(3, 6); const pn = pick(['The Grey Sickness', 'The Sweating Plague', 'A red pestilence', 'The Coughing Death']); event(`${pn} comes to ${fn(f)}. The dead are carted out by night.`, [f], 'big'); note(hexes[f.capital], `Plague in ${f.name}`); if (sig(f)) moment(35, hexes[f.capital], `Plague`, `${pn.replace(/^A /, 'a ').replace(/^The /, 'the ')} comes to ${f.name}`); }
   }
   for (const f of al) if (f.plague > 24) for (const [id] of f.fronts) {
     const g = factions[id]; if (g.alive && g.plague <= 0 && R() < .2) { g.plague = 12 * rnd(2, 4); event(`The pestilence crosses into ${fn(g)}.`, [g], lvl(sig(g, 1.5))); }
@@ -1163,7 +1518,7 @@ function spawnHorde() {
   for (const id of victims) { const v = factions[id]; if (v.alive && owner[v.capital] === h.id) relocateCapital(v); }
   dirty = true;
   event(`From beyond the edge of the map ride ${fn(h)} under ${rulerName(h.ruler)}. The steppe-bells are heard for the first time.`, [h], 'big');
-  note(t, `Here rode in the ${h.name} Horde`);
+  note(t, `Here rode in the ${h.name} Horde`); moment(70, t, `The ${h.name} Horde`, `rides in from beyond the edge of the map`);
   for (const id of victims) declareWar(h, factions[id], null, true);
 }
 function absorptions() {
@@ -1198,7 +1553,7 @@ function die(f) {
   for (const g of factions) g.allies.delete(f.id);
   f.allies.clear();
   const great = f.peak >= landCount * .15;
-  if (great) { collapse = { name: f.name, until: tick + 60 }; note(c, `Here ended ${f.name}`); }
+  if (great) { collapse = { name: f.name, until: tick + 60 }; note(c, `Here ended ${f.name}`); moment(100, c, `The Fall of ${f.name}`, `Once ${f.peak} provinces, founded in Year ${f.founded}`); }
   event(great ? `The last banner of ${fn(f)} is lowered. What was once ${f.peak} provinces is now only a name in this ledger.`
               : `${fn(f)} is no more; its lands pass to others.`, [f], great ? 'big' : f.absorbedBy != null ? 'minor' : lvl(f.peak >= T()));
   if (follow === f.id) renderCard();
@@ -1213,7 +1568,7 @@ function eraCheck() {
   for (const f of al) if (!f.broken && f.peak >= landCount * .18 && f.size < f.peak * .45) {
     f.broken = true; collapse = { name: f.name, until: tick + 60 };
     event(`The power of ${fn(f)} is broken; its provinces drift away like leaves.`, [f], 'big');
-    note(hexes[f.capital], `The breaking of ${f.name}`);
+    note(hexes[f.capital], `The breaking of ${f.name}`); moment(80, hexes[f.capital], `${f.name} Is Broken`, `its provinces drift away like leaves`);
   }
   let name = null, kind = null;
   const recent = (k, span = 80) => eras.some(e => e.kind === k && year() - e.start < span);
@@ -1230,7 +1585,7 @@ function startEra(name, kind) {
   const info = new Map();
   for (const f of aliveList()) info.set(f.id, { name: f.name, color: f.color, capital: f.capital, sub: styleOf(f) });
   eras.push({ name, kind, start: year(), snap: { owner: Int16Array.from(owner), info } });
-  if (eras.length > 1) event(name, [], 'era');
+  if (eras.length > 1) { event(name, [], 'era'); moment(90, null, name, `a new age begins in Year ${year()}`); }
   renderTimeline();
 }
 
@@ -1242,7 +1597,7 @@ function simTick() {
   if (tick % 3 === 0) revolts();
   rulers();
   for (const f of aliveList()) { if (f.plague > 0) f.plague--; if (f.famine > 0) f.famine--; }
-  if (tick % 12 === 0) { diplomacy(); absorptions(); disasters(); spawnTribes(); eraCheck(); }
+  if (tick % 12 === 0) { diplomacy(); absorptions(); disasters(); spawnTribes(); settlements(); faithYear(); ruleYear(); wealthYear(); eraCheck(); }
 }
 
 // ---------- new world ----------
@@ -1250,12 +1605,14 @@ function initWorld(s) {
   genWorld(s);
   owner = new Int16Array(hexes.length).fill(-1);
   distArr = new Int16Array(hexes.length).fill(-1);
+  towns = []; roads = new Map(); battlefields = []; houses = []; faiths = []; marriages = [];
+  faithOf = new Int16Array(hexes.length).fill(-1); faithMode = false; syncFaithButton();
   factions = []; wars = []; chron = []; eras = []; ruins = []; notes = []; tick = 0; collapse = null; lastWarYear = 0;
-  founding = false; follow = null; viewEra = null; labels = []; snapLabels = []; puffs = []; fires = []; armies = new Map();
+  moments = []; momentNow = null; founding = false; follow = null; viewEra = null; labels = []; snapLabels = []; puffs = []; fires = []; armies = new Map();
   document.getElementById('chron').innerHTML = '';
   document.getElementById('banner').hidden = true;
   renderLandMask(); renderPaper(); renderInk(); buildGridWeights();
-  ovC = mk(MW * OS, MH * OS); washC = mk(MW * OS, MH * OS); washTmp = mk(MW * OS, MH * OS); snapWashC = mk(MW * OS, MH * OS);
+  ovC = mk(Math.max(1, cv.width), Math.max(1, cv.height)); washC = mk(MW * OS, MH * OS); washTmp = mk(MW * OS, MH * OS); snapWashC = mk(MW * OS, MH * OS);
 }
 // a link that opens this same world, from its founding, for whoever receives it
 function shareUrl() {
@@ -1282,6 +1639,10 @@ function newWorld(s) {
     starts.push(h);
   }
   event(`Here begins the chronicle of the lands of ${worldName}.`, [], 'era');
+  // three faiths divide the land at the start of history
+  const seeds = [];
+  for (let k = 0; k < 300 && seeds.length < 3; k++) { const h = pick(land); if (seeds.every(q => Math.hypot(q.h.x - h.x, q.h.y - h.y) > 300)) seeds.push({ h, id: newFaith() }); }
+  for (const h of land) faithOf[h.i] = seeds.reduce((a, q) => Math.hypot(q.h.x - h.x, q.h.y - h.y) < Math.hypot(a.h.x - h.x, a.h.y - h.y) ? q : a).id;
   for (const h of starts) {
     const f = newFaction('realm', h.i);
     owner[h.i] = f.id; for (const n of h.nb) if (hexes[n].land) owner[n] = f.id;
@@ -1299,13 +1660,13 @@ function newWorld(s) {
 // ---------- saving & resuming ----------
 // The world lives in this browser's storage. Terrain is rebuilt from the seed; everything
 // that happened since is saved, and time that passed while the page was closed is replayed.
-const SAVE_KEY = 'ledger-of-crowns-v2', PREV_KEY = 'ledger-of-crowns-v2-set-aside', MAX_CATCHUP_YEARS = 200;
+const SAVE_KEY = 'ledger-of-crowns-v3', PREV_KEY = 'ledger-of-crowns-v3-set-aside', MAX_CATCHUP_YEARS = 200;
 const b64 = a => { const u = new Uint8Array(a.buffer, a.byteOffset, a.byteLength); let str = ''; for (let i = 0; i < u.length; i += 0x8000) str += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(str); };
 const unb64 = str => { const bin = atob(str), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return new Int16Array(u.buffer); };
 function packWorld(maxSnaps) {
   const now = year();
   return {
-    v: 2, seed, rs, tick, savedAt: Date.now(), paused, speed, follow, worldName, founding,
+    v: 3, seed, rs, tick, savedAt: Date.now(), paused, speed, follow, worldName, founding,
     owner: b64(owner), caps: land.filter(h => tick - h.lastCap < 36).map(h => [h.i, h.lastCap]),
     factions: factions.map(f => {
       const { fronts, wildFront, allies, truce, log, rulers, ...rest } = f;
@@ -1314,10 +1675,10 @@ function packWorld(maxSnaps) {
       return { ...rest, allies: [...allies], truce: [...truce], log: trim(log), rulers: trim(rulers) };
     }),
     wars: wars.map(({ mark, markT, ...w }) => w),
-    chron: chron.slice(-400), ruins, notes, collapse, lastWarYear,
+    chron: chron.slice(-400), ruins, notes, collapse, lastWarYear, towns, roads: [...roads], battlefields,
     eras: eras.map((e, k) => ({ name: e.name, kind: e.kind, start: e.start,
       snap: e.snap && k >= eras.length - maxSnaps ? { owner: b64(e.snap.owner), info: [...e.snap.info] } : null })),
-    usedNames: [...usedNames], usedWars: [...usedWars],
+    usedNames: [...usedNames], usedWars: [...usedWars], houses, faiths, marriages, faithOf: b64(faithOf),
   };
 }
 function saveWorld() {
@@ -1327,7 +1688,7 @@ function saveWorld() {
   }
 }
 function loadSave() {
-  try { const raw = localStorage.getItem(SAVE_KEY); const sv = raw && JSON.parse(raw); return sv && sv.v === 2 ? sv : null; } catch (e) { return null; }
+  try { const raw = localStorage.getItem(SAVE_KEY); const sv = raw && JSON.parse(raw); return sv && sv.v === 3 ? sv : null; } catch (e) { return null; }
 }
 function restoreWorld(sv) {
   initWorld(sv.seed);
@@ -1335,9 +1696,11 @@ function restoreWorld(sv) {
   owner.set(unb64(sv.owner));
   for (const [i, t] of sv.caps) hexes[i].lastCap = t;
   factions = sv.factions.map(o => ({ ...o, allies: new Set(o.allies), truce: new Map(o.truce), fronts: new Map(), wildFront: [] }));
+  towns = sv.towns || []; roads = new Map(sv.roads || []); battlefields = sv.battlefields || [];
   wars = sv.wars; chron = sv.chron; ruins = sv.ruins; notes = (sv.notes || []).map(({ q, box, ...n }) => n); collapse = sv.collapse; lastWarYear = sv.lastWarYear;
   eras = sv.eras.map(e => ({ ...e, snap: e.snap ? { owner: unb64(e.snap.owner), info: new Map(e.snap.info) } : null }));
   usedNames = new Set(sv.usedNames); usedWars = new Map(sv.usedWars);
+  houses = sv.houses; faiths = sv.faiths; marriages = sv.marriages; faithOf.set(unb64(sv.faithOf));
   for (const e of chron.slice(-250)) pushChronDom(e);
   speed = sv.speed || 1; document.getElementById('speed').value = String(speed);
   paused = !!sv.paused; document.getElementById('pause').textContent = paused ? 'Resume' : 'Pause';
@@ -1354,6 +1717,7 @@ function showIntro(shared) {
     and fall without anyone's help, and the chronicle on the right records every reign.</p>
     <ul>
       <li>Click a realm, or a name in the chronicle, to follow its fortunes.</li>
+      <li>Scroll or pinch to zoom in on a city, and drag to move around the map.</li>
       <li>Click an age on the timeline below to see the map as it stood then.</li>
       <li>Close the tab whenever you like. Time keeps passing, and you'll hear what happened when you return.</li>
     </ul>
@@ -1410,12 +1774,33 @@ function catchUp(ms) {
 // ---------- drawing ----------
 const cv = document.getElementById('map'), ctx = cv.getContext('2d');
 let scale = 1, ox = 0, oy = 0, dpr = 1;
+// the view: `fit` shows the whole map; `zoom` multiplies it around a centre point (vcx, vcy) in map units.
+// `scale`, `ox`, `oy` are the resulting map-to-screen transform used everywhere else.
+const MAX_ZOOM = 4;
+let zoom = 1, vcx = MW / 2, vcy = MH / 2, fit = 1, fox = 0, foy = 0, viewW = 1, viewH = 1;
+function applyView() {
+  const S = fit * zoom, hw = viewW / (2 * S), hh = viewH / (2 * S);
+  vcx = MW / 2 <= hw ? MW / 2 : clamp(vcx, hw, MW - hw);
+  vcy = MH / 2 <= hh ? MH / 2 : clamp(vcy, hh, MH - hh);
+  scale = S; ox = viewW / 2 - vcx * S; oy = viewH / 2 - vcy * S;
+  ovDirty = true; needDraw = true;
+  const zo = document.getElementById('zout'), zr = document.getElementById('zreset'), zi = document.getElementById('zin');
+  if (zo) { zo.disabled = zoom <= 1; zr.disabled = zoom <= 1; zi.disabled = zoom >= MAX_ZOOM; }
+}
+// zoom by factor f keeping the map point under screen point (px, py) where it is
+function zoomAt(px, py, f) {
+  const wx = (px - ox) / scale, wy = (py - oy) / scale;
+  zoom = clamp(zoom * f, 1, MAX_ZOOM);
+  const S = fit * zoom; vcx = wx - (px - viewW / 2) / S; vcy = wy - (py - viewH / 2) / S;
+  applyView();
+}
 function resize() {
   const wrap = document.getElementById('mapwrap'), w = wrap.clientWidth, h = wrap.clientHeight;
   dpr = Math.min(window.devicePixelRatio || 1, 2);
   cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
-  scale = Math.min(w / MW, h / MH); ox = (w - MW * scale) / 2; oy = (h - MH * scale) / 2;
-  needDraw = true;
+  if (ovC) { ovC.width = cv.width; ovC.height = cv.height; }
+  viewW = w; viewH = h; fit = Math.min(w / MW, h / MH); fox = (w - MW * fit) / 2; foy = (h - MH * fit) / 2;
+  applyView();
 }
 addEventListener('resize', resize);
 
@@ -1424,6 +1809,7 @@ function spaced(s) { return s.toUpperCase().split('').join(' '); }
 // borders, names, capitals and ruins: redrawn only when something changes
 function drawOverlay(x, own, labs, live, fields, borders) {
   x.lineCap = 'round'; x.lineJoin = 'round';
+  const LZ = 1 / Math.sqrt(zoom);
   // borders: dash-dot between realms, faint dots against the wilds, clipped to the coast
   x.save();
   x.strokeStyle = INK;
@@ -1431,13 +1817,14 @@ function drawOverlay(x, own, labs, live, fields, borders) {
   x.setLineDash([.1, 3]); x.lineWidth = 1; x.globalAlpha = .45; strokeLines(x, borders.wild);
   x.setLineDash([]); x.globalAlpha = 1;
   // the followed realm gets a firm outline
-  const fol = follow != null && fields.has(follow) && (!live || factions[follow]?.alive) ? follow : null;
+  const fol = !faithMode && follow != null && fields.has(follow) && (!live || factions[follow]?.alive) ? follow : null;
   if (fol != null) {
     const segs = realmContour(fields, fol), keep = [];
     for (let k = 0; k < segs.length; k += 4) if (otherAt(own, (segs[k] + segs[k + 2]) / 2, (segs[k + 1] + segs[k + 3]) / 2, fol) !== -2) keep.push(segs[k], segs[k + 1], segs[k + 2], segs[k + 3]);
     x.strokeStyle = dark(factions[fol]); x.lineWidth = 2.6; x.globalAlpha = .9; strokeLines(x, chain(keep)); x.globalAlpha = 1;
   }
-  x.setTransform(1, 0, 0, 1, 0, 0); x.globalCompositeOperation = 'destination-in'; x.drawImage(landBig, 0, 0);
+  if (live) drawRoads(x);
+  x.globalCompositeOperation = 'destination-in'; x.drawImage(landBig, 0, 0, MW, MH);
   x.restore();
   // place names without collisions: biggest realms first; a name that would overlap tries other
   // spots in its realm, then smaller sizes, and a small realm's name is left off rather than crowd the map
@@ -1458,24 +1845,55 @@ function drawOverlay(x, own, labs, live, fields, borders) {
     };
     let done = null;
     for (const k of [1, .85, .72]) {
-      const size = Math.max(9, l.size * k);
+      const size = Math.max(9 * LZ, l.size * k * LZ);
       x.font = `${size}px "IM Fell English SC", Georgia, serif`;
       const w = x.measureText(spaced(l.name)).width + 8;
       for (const c of l.cands) { const b = boxAt(c, size, w); if (!hit(b) && inFrame(b)) { done = { c, size, b }; break; } }
       if (done) break;
-      if (k === .72 && l.n >= 30) done = { c: l.cands[0], size, b: boxAt(l.cands[0], size, w) };   // a great realm is always named
+      if (k === .72 && l.n >= 30 && l.id >= 0) done = { c: l.cands[0], size, b: boxAt(l.cands[0], size, w) };   // a great realm is always named
     }
     if (done) { boxes.push(done.b); placed.push({ l, ...done }); }
+  }
+  // towns and cities, then their names where there is room
+  if (live) {
+    const reach = new Map();
+    for (const t of towns) drawFields(x, t);          // all farmland first, so no town's fields cover another's houses
+    for (const t of towns) { if (t.ruined) drawTown(x, t); else reach.set(t, drawSettlement(x, t)); }
+    x.textBaseline = 'middle';
+    for (const t of [...towns].filter(t => !t.ruined && t.pop >= TOWN && !factions.some(f => f.alive && f.capital === t.i)).sort((a, b) => b.pop - a.pop)) {
+      const h = hexes[t.i], fs = (11 + Math.min(7, t.pop)) * LZ;
+      x.font = `${t.pop >= CITY ? '' : 'italic '}${fs}px "IM Fell English${t.pop >= GREAT ? ' SC' : ''}", Georgia, serif`;
+      const w = x.measureText(t.name).width;
+      for (const side of [1, -1]) {
+        const tx = h.x + side * (Math.min(reach.get(t) || 8, 40) + 3), b = side > 0 ? { x0: tx, x1: tx + w, y0: h.y - fs * .6, y1: h.y + fs * .6 } : { x0: tx - w, x1: tx, y0: h.y - fs * .6, y1: h.y + fs * .6 };
+        if (hit(b) || !inFrame(b)) continue;
+        boxes.push(b); x.textAlign = side > 0 ? 'left' : 'right';
+        x.lineWidth = 3; x.strokeStyle = 'rgba(236,222,186,.8)'; x.strokeText(t.name, tx, h.y); x.fillStyle = '#3a2b1c'; x.fillText(t.name, tx, h.y);
+        break;
+      }
+    }
+    // battlefields: crossed swords and the battle's name, fading over a century and a half
+    x.textAlign = 'center';
+    for (const bf of battlefields) {
+      const fade = clamp(1 - (year() - bf.year) / 150, 0, 1); if (fade <= 0) continue;
+      x.globalAlpha = .55 + .45 * fade; battleMark(x, bf.x, bf.y);
+      x.font = `italic ${11 * LZ}px "IM Fell English", Georgia, serif`;
+      const label = `${bf.name}, ${bf.year}`, w = x.measureText(label).width, b = { x0: bf.x - w / 2 - 2, x1: bf.x + w / 2 + 2, y0: bf.y + 7, y1: bf.y + 7 + 12 * LZ };
+      if (!hit(b) && inFrame(b)) { boxes.push(b); x.lineWidth = 3; x.strokeStyle = 'rgba(236,222,186,.75)'; x.strokeText(label, bf.x, bf.y + 13); x.fillStyle = '#5a2a1c'; x.fillText(label, bf.x, bf.y + 13); }
+      x.globalAlpha = 1;
+    }
+    x.textBaseline = 'alphabetic';
   }
   // mountain ranges, forests and wastes, in lighter ink, wherever the realms leave room
   for (const f of features) {
     if (f.kind !== 'land') continue;
-    x.font = `italic ${f.size}px "IM Fell English SC", Georgia, serif`;
+    const fsz = f.size * LZ;
+    x.font = `italic ${fsz}px "IM Fell English SC", Georgia, serif`;
     const w = x.measureText(f.name.split('').join('\u200a')).width + 6, ca = Math.abs(Math.cos(f.ang)), sa = Math.abs(Math.sin(f.ang));
-    const b = { x0: f.x - ca * w / 2 - sa * f.size * .6, x1: f.x + ca * w / 2 + sa * f.size * .6, y0: f.y + 8 - sa * w / 2 - ca * f.size * .6, y1: f.y + 8 + sa * w / 2 + ca * f.size * .6 };
+    const b = { x0: f.x - ca * w / 2 - sa * fsz * .6, x1: f.x + ca * w / 2 + sa * fsz * .6, y0: f.y + 8 - sa * w / 2 - ca * fsz * .6, y1: f.y + 8 + sa * w / 2 + ca * fsz * .6 };
     if (hit(b) || !inFrame(b)) continue;
     boxes.push(b);
-    spacedLabel(x, f.name, f.x, f.y + 8, f.ang, f.size, '#4a3826', 'rgba(236,222,186,.8)');
+    spacedLabel(x, f.name, f.x, f.y + 8, f.ang, fsz, '#4a3826', 'rgba(236,222,186,.8)');
   }
   // capitals
   for (const l of labs) { const c = hexes[l.capital]; if (c && own[c.i] === l.id) castle(x, c.x, c.y, l.color); }
@@ -1485,7 +1903,7 @@ function drawOverlay(x, own, labs, live, fields, borders) {
     for (const r of ruins) {
       const fade = clamp(1 - (year() - r.year) / 200, 0, 1); if (fade <= 0) continue;
       x.globalAlpha = .7 * fade; ruin(x, r.x, r.y);
-      const fs = clamp(8 + Math.sqrt(r.peak), 9, 14), t = `old ${r.name}`;
+      const fs = clamp(8 + Math.sqrt(r.peak), 9, 14) * LZ, t = `old ${r.name}`;
       x.font = `italic ${fs}px "IM Fell English", Georgia, serif`;
       const w = x.measureText(t).width, b = { x0: r.x - w / 2 - 2, x1: r.x + w / 2 + 2, y0: r.y + 15 - fs * .8, y1: r.y + 15 + fs * .3 };
       if (hit(b)) continue;
@@ -1599,6 +2017,14 @@ function drawAnim(x, now) {
     }
     x.restore();
   }
+  // a golden age glows around its capital
+  for (const f of factions) {
+    if (!f.alive || f.golden <= tick) continue;
+    const c = hexes[f.capital], pulse = reduceMotion ? .8 : .7 + .3 * Math.sin(now / 900 + f.id);
+    const g = x.createRadialGradient(c.x, c.y, 2, c.x, c.y, 30);
+    g.addColorStop(0, `rgba(240,196,80,${.55 * pulse})`); g.addColorStop(1, 'rgba(240,196,80,0)');
+    x.fillStyle = g; x.beginPath(); x.arc(c.x, c.y, 30, 0, 7); x.fill();
+  }
   // a sickly haze circles the capital of a plague-stricken realm
   x.fillStyle = 'rgba(92,116,48,.85)';
   for (const f of factions) {
@@ -1632,6 +2058,69 @@ function drawArmy(x, a, color, now) {
     const bob = a.moving && !reduceMotion ? Math.abs(Math.sin(now / 160 + k * 1.3)) * 1.6 : 0;
     x.beginPath(); x.arc(-5 + k * 4 + 2, 4 - bob, 1.3, 0, 7); x.fill();
   }
+  x.restore();
+}
+// ---------- big moments: the map stops to mark what matters ----------
+// Major events queue a "moment": time slows, the map dims around the place, ink rings
+// ripple out from it, and a title banner writes itself across the map.
+const MOMENT_MS = 5200, MOMENT_GAP_MS = 4000;
+let moments = [], momentNow = null, momentReady = 0;
+function moment(prio, h, title, sub) {
+  if (bulk || founding) return;          // nothing to watch in years that pass in a blink
+  moments.push({ prio, x: h ? h.x : null, y: h ? h.y : null, title, sub, tick, y0: year() });
+  moments.sort((a, b) => b.prio - a.prio || b.tick - a.tick);
+  if (moments.length > 5) moments.length = 5;
+}
+function updateMoment(now) {
+  if (momentNow && now - momentNow.start > MOMENT_MS) { momentNow = null; momentReady = now + MOMENT_GAP_MS; ovDirty = true; }
+  if (momentNow || now < momentReady || viewEra || !document.getElementById('away').hidden) return;
+  moments = moments.filter(m => tick - m.tick < 36);      // older than three years: the moment has passed
+  const m = moments.shift();
+  if (m) momentNow = { ...m, start: now };
+}
+// time crawls while a moment plays, so it can't be missed
+const momentSlow = now => momentNow && now - momentNow.start < MOMENT_MS - 900 ? .2 : 1;
+function banner(x, cx, cy, w, h) {
+  const l = cx - w / 2, r = cx + w / 2, t = cy - h / 2, b = cy + h / 2, tail = 26;
+  x.fillStyle = '#e2d0a2'; x.strokeStyle = INK; x.lineWidth = 1.4;
+  for (const side of [-1, 1]) {        // folded tails behind the ribbon
+    const ex = side < 0 ? l : r;
+    x.beginPath(); x.moveTo(ex - side * 14, t + 12); x.lineTo(ex + side * tail, t + 12); x.lineTo(ex + side * (tail - 12), cy + 6); x.lineTo(ex + side * tail, b + 10); x.lineTo(ex - side * 14, b + 10); x.closePath(); x.fill(); x.stroke();
+  }
+  x.fillStyle = '#efe3c4';
+  x.beginPath(); x.moveTo(l, t); x.quadraticCurveTo(cx, t - 8, r, t); x.lineTo(r, b); x.quadraticCurveTo(cx, b - 8, l, b); x.closePath(); x.fill(); x.stroke();
+  x.lineWidth = .6; x.beginPath(); x.moveTo(l + 8, t + 6); x.quadraticCurveTo(cx, t - 2, r - 8, t + 6); x.moveTo(l + 8, b - 6); x.quadraticCurveTo(cx, b - 14, r - 8, b - 6); x.stroke();
+}
+function drawMoment(x, now) {
+  const m = momentNow; if (!m) return;
+  const t = clamp((now - m.start) / MOMENT_MS, 0, 1), fade = Math.min(1, t / .07, (1 - t) / .12);
+  x.save();
+  if (m.x != null) {
+    // spotlight on the place
+    const g = x.createRadialGradient(m.x, m.y, 60, m.x, m.y, 360);
+    g.addColorStop(0, 'rgba(28,18,8,0)'); g.addColorStop(1, `rgba(28,18,8,${.5 * fade})`);
+    x.fillStyle = g; x.fillRect(0, 0, MW, MH);
+    if (!reduceMotion) for (let k = 0; k < 3; k++) {
+      const rt = t * 1.7 - k * .2; if (rt < 0 || rt > 1) continue;
+      x.strokeStyle = `rgba(122,36,24,${(1 - rt) * .85 * fade})`; x.lineWidth = 2.2 - rt * 1.4;
+      x.beginPath(); x.arc(m.x, m.y, 10 + rt * 95, 0, 7); x.stroke();
+    }
+  } else { x.fillStyle = `rgba(60,38,12,${.24 * fade})`; x.fillRect(0, 0, MW, MH); }
+  // the banner sits away from the place it describes, at the same place on screen whatever the zoom
+  x.setTransform(dpr * fit, 0, 0, dpr * fit, dpr * fox, dpr * foy);
+  const cy = m.y == null || m.y > MH * .45 ? MARGIN + 80 : MH - MARGIN - 175, cx = MW / 2;   // clear of the cartouche
+  const title = m.title.toUpperCase().split('').join('\u2009');
+  x.font = '46px "IM Fell English SC", Georgia, serif'; const tw = x.measureText(title).width;
+  x.font = 'italic 21px "IM Fell English", Georgia, serif'; const sub = `${m.sub} · Year ${m.y0}`, sw = x.measureText(sub).width;
+  const w = Math.max(tw, sw) + 100, h = 104;
+  x.globalAlpha = fade; banner(x, cx, cy, w, h);
+  // the ink writes itself across the banner
+  const rv = reduceMotion ? 1 : clamp((t - .05) / .3, 0, 1);
+  x.save(); x.beginPath(); x.rect(cx - w / 2, cy - h / 2 - 10, w * rv, h + 20); x.clip();
+  x.textAlign = 'center'; x.textBaseline = 'middle';
+  x.font = '46px "IM Fell English SC", Georgia, serif'; x.fillStyle = '#7a2418'; x.fillText(title, cx, cy - 12);
+  x.font = 'italic 21px "IM Fell English", Georgia, serif'; x.fillStyle = INK; x.fillText(sub, cx, cy + 28);
+  x.restore();
   x.restore();
 }
 function drawNotes(x) {
@@ -1680,6 +2169,299 @@ function drawLiveMarks(x) {
     }
   }
 }
+function drawRoads(x) {
+  // roads near fresh fighting are cut
+  const fights = land.filter(h => tick - h.lastCap < 24);
+  x.strokeStyle = '#6b4a2e';
+  for (const r of roads.values()) {
+    const a = hexes[r.a], b = hexes[r.b], m = Math.min(r.age, 100) / 100;
+    const d = Math.hypot(b.x - a.x, b.y - a.y), bend = ((r.a * 7 + r.b * 13) % 2 ? 1 : -1) * .08;
+    const cx = (a.x + b.x) / 2 - (b.y - a.y) * bend, cy = (a.y + b.y) / 2 + (b.x - a.x) * bend;
+    const at = s => [(1 - s) ** 2 * a.x + 2 * (1 - s) * s * cx + s * s * b.x, (1 - s) ** 2 * a.y + 2 * (1 - s) * s * cy + s * s * b.y];
+    x.lineWidth = .7 + m * 1.1; x.globalAlpha = (r.used ? .35 + .45 * m : .15 + .2 * m);
+    x.setLineDash(r.age < 15 ? [2, 3] : []);
+    x.beginPath();
+    const steps = Math.max(4, Math.round(d / 12)); let pen = false;
+    for (let k = 0; k <= steps; k++) {
+      const [px, py] = at(k / steps), cut = fights.some(h => (h.x - px) ** 2 + (h.y - py) ** 2 < 22 * 22);
+      if (cut) { pen = false; continue; }
+      pen ? x.lineTo(px, py) : x.moveTo(px, py); pen = true;
+    }
+    x.stroke();
+  }
+  x.setLineDash([]); x.globalAlpha = 1;
+}
+const onLand = (px, py) => F[clamp(Math.round(py / GS), 0, gh - 1) * gw + clamp(Math.round(px / GS), 0, gw - 1)] > thr + .004;
+// roof colours: each town builds in its own materials (tile, slate, thatch, brick)
+const ROOF_SETS = [['#8f4c33', '#a85f40', '#b8714d'], ['#5d636d', '#737984', '#888e98'], ['#94703f', '#a9824c', '#bb955c'], ['#7a4634', '#925640', '#a5684c']];
+function houseOutline(path, px, py, p) {
+  const hw = p.w * .62, wh = hw * 1.05, rh = hw * .95;
+  path.moveTo(px - hw, py); path.lineTo(px - hw, py - wh); path.lineTo(px, py - wh - rh); path.lineTo(px + hw, py - wh); path.lineTo(px + hw, py); path.closePath();
+}
+function gable(x, px, py, hw, wh, rh, roof) {
+  x.fillStyle = '#efe3c4'; x.beginPath(); x.rect(px - hw, py - wh, hw * 2, wh); x.fill(); x.stroke();
+  x.fillStyle = roof; x.beginPath(); x.moveTo(px - hw - .35, py - wh); x.lineTo(px, py - wh - rh); x.lineTo(px + hw + .35, py - wh); x.closePath(); x.fill(); x.stroke();
+}
+function building(x, kind, px, py, p, roof, dome, detail) {
+  let hw = p.w * .62, wh = hw * 1.05, rh = hw * .95;
+  x.strokeStyle = INK; x.lineWidth = .45;
+  if (kind === 'long') { hw *= 1.45; rh *= .72; }
+  if (kind === 'tower') { hw *= .6; wh *= 2.5; rh *= 1.6; }
+  if (kind === 'temple' || kind === 'palace') { hw *= 1.55; wh *= 1.5; }
+  if (kind === 'palace') { gable(x, px - hw - 1.2, py, hw * .45, wh * 1.6, rh * 1.4, roof); gable(x, px + hw + 1.2, py, hw * .45, wh * 1.6, rh * 1.4, roof); }
+  if (kind === 'temple' && dome) {
+    x.fillStyle = '#efe3c4'; x.beginPath(); x.rect(px - hw, py - wh, hw * 2, wh); x.fill(); x.stroke();
+    x.fillStyle = roof; x.beginPath(); x.arc(px, py - wh, hw * .85, Math.PI, 0); x.closePath(); x.fill(); x.stroke();
+    x.beginPath(); x.moveTo(px, py - wh - hw * .85); x.lineTo(px, py - wh - hw * .85 - 2); x.stroke();
+  } else {
+    gable(x, px, py, hw, wh, rh, roof);
+    if (kind === 'temple') {        // a spire rising from the roof
+      x.fillStyle = roof; x.beginPath(); x.moveTo(px - hw * .28, py - wh - rh * .5); x.lineTo(px, py - wh - rh * 2.8); x.lineTo(px + hw * .28, py - wh - rh * .5); x.closePath(); x.fill(); x.stroke();
+    }
+  }
+  if (detail) {
+    x.fillStyle = INK;
+    if (kind !== 'tower') x.fillRect(px - hw * .16, py - wh * .5, hw * .32, wh * .5);
+    if (kind === 'temple' || kind === 'palace' || kind === 'tower') { x.beginPath(); x.arc(px, py - wh * (kind === 'tower' ? .7 : .78), Math.max(.3, hw * .12), 0, 7); x.fill(); }
+  }
+}
+function wallTower(x, px, py) {
+  x.strokeStyle = INK; x.lineWidth = .5; x.fillStyle = '#e6d5a8';
+  x.beginPath(); x.rect(px - 1.4, py - 4, 2.8, 4.5); x.fill(); x.stroke();
+  x.fillStyle = '#7a5a44'; x.beginPath(); x.moveTo(px - 1.8, py - 4); x.lineTo(px, py - 6.8); x.lineTo(px + 1.8, py - 4); x.closePath(); x.fill(); x.stroke();
+}
+// field colours: ripe wheat, green crops, fallow earth; a golden age turns them richer
+const FIELD_TINTS = ['rgba(205,182,112,.5)', 'rgba(150,165,96,.45)', 'rgba(176,150,98,.4)'];
+const FIELD_LUSH = ['rgba(222,190,92,.62)', 'rgba(140,172,80,.58)', 'rgba(200,176,96,.52)'];
+// the hex nearest a map point, using the grid's own layout
+function nearestHex(px, py) {
+  const r = clamp(Math.round((py - Y0) / (1.5 * HR)), 0, ROWS - 1), c = clamp(Math.round((px - X0) / (SQ3 * HR) - .5 * (r & 1)), 0, COLS - 1);
+  return r * COLS + c;
+}
+// ---------- planned towns ----------
+// Every settlement is laid out on a plan, chosen by where it stands:
+//   harbour - on the coast: a street grid squared to the shore, with a jetty out into the water
+//   linear  - on a river: a long main street following the river, rows of blocks either side
+//   radial  - a realm's seat: rings of houses round the central square, streets radiating out, a star-shaped wall
+//   grid    - anywhere else: square blocks around a market square
+// Houses line the streets; a town grows along its main streets first, then fills in between,
+// so even its growth looks planned.
+const BLOCK = 8, STREET = 1.8, HALF = (BLOCK - STREET) / 2;
+const planCache = new Map();
+function planType(t) {
+  // the site suggests a plan but does not dictate it, so neighbouring towns are not all alike
+  const h = hexes[t.i], roll = ((Math.imul(t.i + 7, 2654435761) ^ t.founded) >>> 0) % 1000 / 1000;
+  if (h.coast && roll < .6) return 'harbour';
+  if (h.river && roll < .75) return 'linear';
+  if (t.seat && roll < .35) return 'radial';
+  return 'grid';
+}
+function planAngle(t, type, rr) {
+  const h = hexes[t.i];
+  if (type === 'harbour') {        // v axis points out to sea
+    let sx = 0, sy = 0; for (const n of h.nb) if (!hexes[n].land) { sx += hexes[n].x - h.x; sy += hexes[n].y - h.y; }
+    return Math.atan2(sy, sx) - Math.PI / 2;
+  }
+  if (type === 'linear') {         // u axis follows the river
+    const rn = h.nb.filter(n => hexes[n].river || !hexes[n].land).map(n => hexes[n]);
+    if (rn.length) return Math.atan2(rn[0].y - h.y, rn[0].x - h.x);
+  }
+  return rr() * Math.PI / 2;
+}
+function townPlan(t) {
+  const type = planType(t), key = t.i + ':' + t.founded + ':' + type; let pl = planCache.get(key); if (pl) return pl;
+  const rr = mulberry32((seed ^ Math.imul(t.i + 1, 2654435761) ^ t.founded) >>> 0), h = hexes[t.i];
+  const ang = planAngle(t, type, rr), c = Math.cos(ang), sn = Math.sin(ang);
+  const toW = (u, v) => [h.x + u * c - v * sn, h.y + u * sn + v * c];
+  const slots = [], blocks = [];
+  if (type === 'radial') {
+    // rings of houses around a round square; the spokes are streets and are filled first
+    const spokes = 6 + (t.i % 2) * 2;
+    for (let ring = 1; ring <= 6; ring++) {
+      const r = 3.5 + ring * 4.2, count = Math.floor(2 * Math.PI * r / 2.7), ringSlots = [];
+      for (let k = 0; k < count; k++) {
+        const a = k / count * Math.PI * 2, off = ((a * spokes / (2 * Math.PI)) % 1 + 1) % 1;
+        const fromSpoke = Math.min(off, 1 - off);
+        if (fromSpoke < .09) continue;                                   // leave the radiating street clear
+        const [x, y] = toW(Math.cos(a) * r, Math.sin(a) * r);
+        ringSlots.push({ x, y, w: 1.45 + rr() * .3, cheb: Math.ceil(r / BLOCK), core: ring <= 1, r, a, d: ring + fromSpoke * 2 });
+      }
+      ringSlots.sort((p, q) => p.d - q.d); slots.push(...ringSlots);
+    }
+    pl = { type, toW, slots, blocks, h, spokes, rr: rr() * 1e9 | 0 };
+  } else {
+    for (let i = -5; i <= 5; i++) for (let j = -5; j <= 5; j++) {
+      if (!i && !j) continue;
+      let d;
+      if (type === 'linear') { if (Math.abs(j) > 2) continue; d = Math.abs(i) * .8 + (Math.abs(j) - 1) * 3.5 + rr() * .2; }
+      else if (type === 'harbour') { if (j > 0) continue; d = Math.abs(i) * .9 + Math.abs(j) * 1.1 + rr() * .25; }   // inland side only; the sea is at +v
+      else d = Math.hypot(i, j) - (i === 0 || j === 0 ? .7 : 0) + rr() * .25;
+      if (type === 'linear' && j === 0) continue;                       // the main street runs along j = 0
+      blocks.push({ i, j, d });
+    }
+    blocks.sort((p, q) => p.d - q.d);
+    const depth = 1.5;
+    blocks.forEach((b, bi) => {
+      const cu = b.i * BLOCK, cv = b.j * BLOCK;
+      for (const [su, sv] of [[0, -1], [1, 0], [0, 1], [-1, 0]]) for (const off of [-.62, 0, .62]) {
+        const [x, y] = toW(cu + su * (HALF - depth) - sv * off * HALF, cv + sv * (HALF - depth) + su * off * HALF);
+        slots.push({ x, y, bi, w: 1.45 + rr() * .3, cheb: Math.max(Math.abs(b.i), Math.abs(b.j)), core: b.d < 1.6 });
+      }
+    });
+    pl = { type, toW, slots, blocks, h, rr: rr() * 1e9 | 0 };
+  }
+  planCache.set(key, pl); return pl;
+}
+// the plots a town occupies at a given size, skipping any that fall in the sea
+function occupied(pl, count) {
+  const out = [];
+  for (const sl of pl.slots) { if (out.length >= count) break; if (onLand(sl.x, sl.y)) out.push(sl); }
+  return out;
+}
+const blockSquare = (pl, i, j, inset = 0) => [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([a, b]) => pl.toW(i * BLOCK + a * (BLOCK / 2 - inset), j * BLOCK + b * (BLOCK / 2 - inset)));
+function polyPath(path, pts) { path.moveTo(...pts[0]); for (let q = 1; q < pts.length; q++) path.lineTo(...pts[q]); path.closePath(); }
+// a wall along a closed polyline in plan coordinates, drawn only where it stands on land
+function wallAlong(x, pl, ring) {
+  const wall = new Path2D(), merlons = new Path2D();
+  for (let e = 0; e < ring.length - 1; e++) {
+    const [ua, va] = ring[e], [ub, vb] = ring[e + 1], len = Math.hypot(ub - ua, vb - va), steps = Math.max(2, Math.round(len / 1.5));
+    for (let k = 0; k < steps; k++) {
+      const A = pl.toW(ua + (ub - ua) * k / steps, va + (vb - va) * k / steps), B = pl.toW(ua + (ub - ua) * (k + 1) / steps, va + (vb - va) * (k + 1) / steps);
+      if (!onLand(...A) || !onLand(...B)) continue;
+      wall.moveTo(...A); wall.lineTo(...B); merlons.moveTo(...A); merlons.lineTo(A[0], A[1] - 1.2);
+    }
+  }
+  x.strokeStyle = INK; x.lineWidth = 1.8; x.stroke(wall);
+  x.strokeStyle = '#e6d5a8'; x.lineWidth = .7; x.stroke(wall);
+  x.strokeStyle = INK; x.lineWidth = .5; x.stroke(merlons);
+}
+// fields: a grid of strip fields aligned with the town, filled ring by ring outside its built area
+function drawFields(x, t) {
+  if (t.ruined || t.pop < .4) return;
+  const pl = townPlan(t), live = occupied(pl, builtCount(t.pop));
+  let reach = 0; for (const sl of live) reach = Math.max(reach, sl.cheb);
+  const f = owner[t.i] >= 0 ? factions[owner[t.i]] : null, tints = f && f.golden > tick ? FIELD_LUSH : FIELD_TINTS;
+  const want = Math.round(clamp(4 + t.pop * 6, 4, 56)), rr = mulberry32(pl.rr), cells = [];
+  for (let i = -reach - 4; i <= reach + 4; i++) for (let j = -reach - 4; j <= reach + 4; j++) {
+    const ring = Math.max(Math.abs(i), Math.abs(j)) - reach; if (ring < 1) continue;
+    cells.push({ i, j, d: ring + Math.hypot(i, j) * .05 });
+  }
+  cells.sort((p, q) => p.d - q.d);
+  const byTint = tints.map(() => new Path2D()), edges = new Path2D(), furrows = new Path2D(); let n = 0;
+  for (const cell of cells) {
+    if (n >= want) break;
+    const [cx, cy] = pl.toW(cell.i * BLOCK, cell.j * BLOCK);
+    if (!onLand(cx, cy)) continue;
+    const hx = hexes[nearestHex(cx, cy)]; if (hx && hx.terrain === 'mountain') continue;
+    n++;
+    // three strips per field, the strips running one way or the other in alternate fields
+    const along = (cell.i + cell.j) % 2 === 0, inset = .5, w = BLOCK / 2 - inset, strip = (2 * w) / 3;
+    for (let k = 0; k < 3; k++) {
+      const a0 = -w + k * strip + .15, a1 = a0 + strip - .3;
+      const pts = (along ? [[a0, -w], [a1, -w], [a1, w], [a0, w]] : [[-w, a0], [w, a0], [w, a1], [-w, a1]]).map(([u, v]) => pl.toW(cell.i * BLOCK + u, cell.j * BLOCK + v));
+      polyPath(byTint[Math.floor(rr() * tints.length)], pts); polyPath(edges, pts);
+      const m = (a0 + a1) / 2, [p0, p1] = along ? [[m, -w + .6], [m, w - .6]] : [[-w + .6, m], [w - .6, m]];
+      furrows.moveTo(...pl.toW(cell.i * BLOCK + p0[0], cell.j * BLOCK + p0[1])); furrows.lineTo(...pl.toW(cell.i * BLOCK + p1[0], cell.j * BLOCK + p1[1]));
+    }
+  }
+  x.save();
+  tints.forEach((col, i) => { x.fillStyle = col; x.fill(byTint[i]); });
+  x.strokeStyle = 'rgba(90,70,40,.4)'; x.lineWidth = .3; x.stroke(edges);
+  x.strokeStyle = 'rgba(90,70,40,.3)'; x.lineWidth = .3; x.stroke(furrows);
+  x.restore();
+}
+function drawSettlement(x, t) {
+  const pl = townPlan(t), h = pl.h, want = builtCount(t.pop), peak = Math.max(want, builtCount(t.peak || t.pop));
+  const all = occupied(pl, peak), live = all.slice(0, want), ghost = all.slice(want), isTown = t.pop >= TOWN;
+  x.save(); x.lineJoin = 'round'; x.lineCap = 'round';
+  const streets = new Path2D(), plaza = new Path2D();
+  if (pl.type === 'radial') {
+    // ring roads and radiating streets out to the edge of the town, round a circular square
+    let rmax = 6; for (const sl of live) rmax = Math.max(rmax, sl.r);
+    for (let r = 5.6; r <= rmax + 2; r += 4.2) { const pts = []; for (let k = 0; k <= 48; k++) pts.push(pl.toW(Math.cos(k / 48 * Math.PI * 2) * r, Math.sin(k / 48 * Math.PI * 2) * r)); streets.moveTo(...pts[0]); pts.forEach(p => streets.lineTo(...p)); }
+    for (let k = 0; k < pl.spokes; k++) { const a = k / pl.spokes * Math.PI * 2; streets.moveTo(...pl.toW(Math.cos(a) * 4, Math.sin(a) * 4)); streets.lineTo(...pl.toW(Math.cos(a) * (rmax + 3), Math.sin(a) * (rmax + 3))); }
+    if (isTown) { const pts = []; for (let k = 0; k < 24; k++) pts.push(pl.toW(Math.cos(k / 24 * Math.PI * 2) * 4, Math.sin(k / 24 * Math.PI * 2) * 4)); polyPath(plaza, pts); }
+  } else {
+    const used = new Set(live.map(sl => sl.bi));
+    for (const bi of used) { const b = pl.blocks[bi]; polyPath(streets, blockSquare(pl, b.i, b.j, STREET / 2)); }
+    if (isTown) polyPath(plaza, blockSquare(pl, 0, 0, STREET / 2));
+    if (pl.type === 'linear' && live.length) {           // the main street, running the length of the town
+      let umax = BLOCK; for (const bi of used) umax = Math.max(umax, (Math.abs(pl.blocks[bi].i) + .5) * BLOCK);
+      streets.moveTo(...pl.toW(-umax, 0)); streets.lineTo(...pl.toW(umax, 0));
+    }
+  }
+  if (isTown) { x.fillStyle = 'rgba(226,207,158,.9)'; x.fill(plaza); streets.addPath(plaza); }
+  x.strokeStyle = 'rgba(120,92,58,.6)'; x.lineWidth = .5; x.stroke(streets);
+  // a harbour town builds a jetty out into the water, with a boat moored alongside
+  if (pl.type === 'harbour' && isTown) {
+    let v0 = 0; while (v0 < 40 && onLand(...pl.toW(0, v0))) v0 += 1;
+    const L = 6 + Math.min(6, t.pop), A = pl.toW(-.8, v0 - 1), B = pl.toW(-.8, v0 + L), C = pl.toW(.8, v0 + L), D = pl.toW(.8, v0 - 1);
+    const jetty = new Path2D(); polyPath(jetty, [A, B, C, D]);
+    x.fillStyle = '#c9a874'; x.fill(jetty); x.strokeStyle = INK; x.lineWidth = .5; x.stroke(jetty);
+    if (t.pop >= CITY) { const [bx, by] = pl.toW(3, v0 + L * .7); x.save(); x.translate(bx, by); x.scale(.32, .32); ship(x, 0, 0, 1); x.restore(); }   // a small boat, to the jetty's scale
+  }
+  // districts abandoned since the town's height: the dotted outlines of empty houses
+  if (ghost.length) {
+    const gp = new Path2D(); for (const sl of ghost) houseOutline(gp, sl.x, sl.y, sl);
+    x.setLineDash([.6, 1.2]); x.strokeStyle = 'rgba(90,70,40,.55)'; x.lineWidth = .4; x.stroke(gp); x.setLineDash([]);
+  }
+  // a city walls in what it held when it became one; harbour sides stay open to the sea
+  if (t.pop >= CITY) {
+    const held = occupied(pl, builtCount(CITY));
+    if (pl.type === 'radial') {
+      // a star-shaped wall: bastions pointing out between the radiating streets
+      let rw = 8; for (const sl of held) rw = Math.max(rw, sl.r + 3);
+      const pts = [], n = pl.spokes * 2;
+      for (let k = 0; k <= n; k++) { const a = (k + .5) / n * Math.PI * 2, r = k % 2 ? rw : rw * 1.22; pts.push([Math.cos(a) * r, Math.sin(a) * r]); }
+      wallAlong(x, pl, pts);
+      for (let k = 0; k < n; k += 2) { const P = pl.toW(...pts[k]); if (onLand(...P)) wallTower(x, P[0], P[1]); }
+    } else {
+      let i0 = 0, i1 = 0, j0 = 0, j1 = 0;
+      for (const sl of held) { const b = pl.blocks[sl.bi]; i0 = Math.min(i0, b.i); i1 = Math.max(i1, b.i); j0 = Math.min(j0, b.j); j1 = Math.max(j1, b.j); }
+      const m = 1.2, U0 = (i0 - .5) * BLOCK - m, U1 = (i1 + .5) * BLOCK + m, V0 = (j0 - .5) * BLOCK - m, V1 = (j1 + .5) * BLOCK + m;
+      wallAlong(x, pl, [[U0, V0], [U1, V0], [U1, V1], [U0, V1], [U0, V0]]);
+      for (const [u, v] of [[U0, V0], [U1, V0], [U1, V1], [U0, V1], [0, V0], [0, V1], [U0, 0], [U1, 0]]) { const P = pl.toW(u, v); if (onLand(...P)) wallTower(x, P[0], P[1]); }
+    }
+  }
+  // the buildings, back to front: houses lining the streets, the temple and palace facing the square
+  const roofs = ROOF_SETS[t.i % ROOF_SETS.length], dome = owner[t.i] >= 0 && factions[owner[t.i]].faith % 2 === 1, detail = zoom >= 1.6;
+  const items = live.map((sl, k) => ({ x: sl.x, y: sl.y, p: sl, kind: t.pop >= CITY && k % 23 === 11 ? 'tower' : 'house', roof: roofs[sl.core ? 0 : 1 + (k % 2)] }));
+  if (isTown) { const [tx, ty] = pl.toW(0, -HALF * .45); items.push({ x: tx, y: ty, p: { w: 1.6 }, kind: 'temple', roof: roofs[0] }); }
+  if (t.pop >= GREAT) { const [px, py] = pl.toW(0, HALF * .55); items.push({ x: px, y: py, p: { w: 1.4 }, kind: 'palace', roof: roofs[0] }); }
+  items.sort((a, b) => a.y - b.y);
+  for (const it of items) building(x, it.kind, it.x, it.y, it.p, it.roof, dome, detail);
+  x.restore();
+  let reach = 8; for (const sl of live) reach = Math.max(reach, Math.hypot(sl.x - h.x, sl.y - h.y));
+  return reach;
+}
+function drawTown(x, t) {
+  const h = hexes[t.i];
+  x.save(); x.translate(h.x, h.y); x.strokeStyle = t.ruined ? '#8a7660' : INK; x.lineWidth = .8; x.fillStyle = '#efe3c4';
+  if (t.ruined) {
+    x.globalAlpha = clamp(1 - (year() - t.ruinYear) / 150, .2, .8);
+    x.beginPath(); x.moveTo(-3, 2); x.lineTo(-3, -1); x.lineTo(-1.5, -2.5); x.lineTo(0, -.5); x.lineTo(0, 2); x.moveTo(1.5, 2); x.lineTo(1.5, 0); x.lineTo(3, -1); x.lineTo(3, 2); x.stroke();
+  } else if (t.pop >= CITY) {
+    x.beginPath(); x.arc(0, 0, 6, 0, 7); x.fill(); x.lineWidth = 1.3; x.stroke();
+    x.lineWidth = .8; x.fillStyle = INK;
+    for (let k = 0; k < 4; k++) { const a = k * Math.PI / 2 + Math.PI / 4; x.fillRect(Math.cos(a) * 6 - 1.2, Math.sin(a) * 6 - 1.2, 2.4, 2.4); }
+    x.fillStyle = '#efe3c4'; x.beginPath(); x.rect(-2.5, -2, 5, 4); x.fill(); x.stroke();
+    x.beginPath(); x.moveTo(-3, -2); x.lineTo(0, -4.5); x.lineTo(3, -2); x.stroke();
+  } else if (t.pop >= TOWN) {
+    for (const [dx, dy] of [[-3, 1], [2, 1.5], [-.5, -2]]) {
+      x.beginPath(); x.rect(dx - 1.6, dy - 1.2, 3.2, 2.6); x.fill(); x.stroke();
+      x.beginPath(); x.moveTo(dx - 2, dy - 1.2); x.lineTo(dx, dy - 3); x.lineTo(dx + 2, dy - 1.2); x.stroke();
+    }
+  } else {
+    x.fillStyle = INK; x.beginPath(); x.arc(0, 0, 1.7, 0, 7); x.fill();
+  }
+  x.restore();
+}
+function battleMark(x, px, py) {
+  x.save(); x.translate(px, py); x.strokeStyle = '#6e3a2a'; x.lineWidth = 1.1;
+  x.beginPath(); x.moveTo(-4, -4); x.lineTo(4, 4); x.moveTo(4, -4); x.lineTo(-4, 4);
+  x.moveTo(-4.5, -1.5); x.lineTo(-1.5, -4.5); x.moveTo(4.5, -1.5); x.lineTo(1.5, -4.5); x.stroke();
+  x.restore();
+}
 function castle(x, px, py, color) {
   x.save(); x.translate(px, py); x.strokeStyle = INK; x.lineWidth = .9;
   x.fillStyle = '#efe3c4';
@@ -1722,12 +2504,13 @@ function draw() {
   if (!viewEra) drawLiveMarks(ctx);
   if (ovDirty) {
     const o = ovC.getContext('2d');
-    o.setTransform(1, 0, 0, 1, 0, 0); o.clearRect(0, 0, ovC.width, ovC.height); o.setTransform(OS, 0, 0, OS, 0, 0);
-    if (viewEra) drawOverlay(o, viewEra.snap.owner, snapLabels, false, snapFields, snapBorders); else drawOverlay(o, owner, labels, true, liveFields, liveBorders);
+    // the overlay is drawn at screen resolution for the current view, so names stay crisp at any zoom
+    o.setTransform(1, 0, 0, 1, 0, 0); o.clearRect(0, 0, ovC.width, ovC.height); o.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * ox, dpr * oy);
+    if (viewEra) drawOverlay(o, viewEra.snap.owner, snapLabels, false, snapFields, snapBorders); else if (faithMode) drawOverlay(o, faithView, labels, false, liveFields, liveBorders); else drawOverlay(o, owner, labels, true, liveFields, liveBorders);
     ovDirty = false;
   }
-  ctx.drawImage(ovC, 0, 0, MW, MH);
-  if (!viewEra) { drawAnim(ctx, performance.now()); drawNotes(ctx); }
+  ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(ovC, 0, 0); ctx.restore();
+  if (!viewEra) { const now = performance.now(); drawAnim(ctx, now); drawNotes(ctx); drawMoment(ctx, now); }
 }
 
 // ---------- side panel ----------
@@ -1754,7 +2537,7 @@ function renderCard() {
   card.hidden = false; hint.hidden = true;
   const r = f.ruler, foes = wars.filter(w => w.a === f.id || w.b === f.id).map(w => fn(factions[w.a === f.id ? w.b : w.a]));
   const allies = [...f.allies].map(id => fn(factions[id]));
-  const past = f.rulers.slice(-6).reverse().map(p => `<li>${rulerName(p)} <span style="color:var(--muted)">(Y.${p.start}–${p.end})</span></li>`).join('');
+  const past = f.rulers.slice(-6).reverse().map(p => `<li>${rulerName(p)}${p.house != null && houses[p.house] ? ` <span style="color:var(--muted)">of House ${houses[p.house].name}</span>` : ''} <span style="color:var(--muted)">(Y.${p.start}–${p.end})</span></li>`).join('');
   const deeds = f.log.slice(-8).reverse().map(e => `<li><span style="color:var(--muted)">Y.${e.y}</span> ${e.text}</li>`).join('');
   const origin = f.parent >= 0 ? ` · broke from ${fn(factions[f.parent])}` : '';
   card.innerHTML = `<button class="x" title="Stop following" id="unfollow">×</button>
@@ -1763,6 +2546,10 @@ function renderCard() {
       <dt>Founded</dt><dd>Year ${f.founded}${origin}</dd>
       ${f.alive ? `<dt>Provinces</dt><dd>${f.size} <span style="color:var(--muted)">(peak ${f.peak} in Y.${f.peakYear})</span></dd>
       <dt>Ruler</dt><dd>${rulerName(r)}, ${Math.floor(r.age)}, ${abilityWord(r.ability)}</dd>
+      <dt>Rule</dt><dd>${govWord(f)}${f.house != null ? ` of ${armsSVG(houses[f.house])} House ${houses[f.house].name}` : ''}</dd>
+      <dt>Faith</dt><dd>${faiths[f.faith] ? faiths[f.faith].name : '—'}</dd>
+      <dt>Treasury</dt><dd>${treasuryWord(f)}${f.golden > tick ? ', <b>in a golden age</b>' : ''}${f.bankrupt > tick ? ', <b>bankrupt</b>' : ''}</dd>
+      ${(() => { const kin = marriages.filter(m => (m.a === f.id || m.b === f.id) && year() - m.year < 80).map(m => factions[m.a === f.id ? m.b : m.a]).filter(g => g.alive); return kin.length ? `<dt>Kin</dt><dd>${[...new Set(kin)].map(fn).join(', ')}</dd>` : ''; })()}
       <dt>Temper</dt><dd>${traitWords(f.traits)}</dd>
       <dt>Allies</dt><dd>${allies.join(', ') || '—'}</dd>
       <dt>At war</dt><dd>${foes.join(', ') || '—'}</dd>
@@ -1789,6 +2576,7 @@ function renderTimeline() {
   });
 }
 function showEra(e) {
+  if (e && faithMode) { faithMode = false; syncFaithButton(); dirty = true; lastWash = -1e9; }
   viewEra = e; ovDirty = true;
   const b = document.getElementById('banner');
   if (e) {
@@ -1801,17 +2589,70 @@ function showEra(e) {
 }
 document.getElementById('banner').onclick = () => showEra(null);
 document.getElementById('foundskip').onclick = () => endFounding();
+let faithView = null;
+function syncFaithButton() { const b = document.getElementById('faithmode'); b.textContent = faithMode ? 'Realms' : 'Faiths'; b.setAttribute('aria-pressed', String(faithMode)); }
+document.getElementById('faithmode').onclick = () => { if (viewEra) showEra(null); faithMode = !faithMode; syncFaithButton(); dirty = true; lastWash = -1e9; };
 document.getElementById('away').addEventListener('click', ev => { const a = ev.target.closest('a.fn'); if (a) { follow = +a.dataset.f; renderCard(); } });
 chronEl.addEventListener('click', ev => { const a = ev.target.closest('a.fn'); if (a) { follow = +a.dataset.f; renderCard(); } });
 document.getElementById('card').addEventListener('click', ev => { const a = ev.target.closest('a.fn'); if (a) { follow = +a.dataset.f; renderCard(); } });
-cv.addEventListener('click', ev => {
-  const rc = cv.getBoundingClientRect(), wx = (ev.clientX - rc.left - ox) / scale, wy = (ev.clientY - rc.top - oy) / scale;
+// pointer input: drag to pan, pinch or wheel to zoom, a tap (no drag) follows the realm under it
+const pts = new Map();
+let dragMoved = 0, pinch = null;
+const pinchState = () => { const [a, b] = [...pts.values()]; return { mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2, d: Math.max(10, Math.hypot(a.x - b.x, a.y - b.y)) }; };
+cv.addEventListener('pointerdown', e => {
+  try { cv.setPointerCapture(e.pointerId); } catch (err) {}
+  pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  dragMoved = pts.size > 1 ? 99 : 0;
+  if (pts.size === 2) pinch = pinchState();
+  cv.classList.add('dragging');
+});
+cv.addEventListener('pointermove', e => {
+  const p = pts.get(e.pointerId); if (!p) return;
+  const dx = e.clientX - p.x, dy = e.clientY - p.y;
+  p.x = e.clientX; p.y = e.clientY;
+  if (pts.size === 1) {
+    dragMoved += Math.abs(dx) + Math.abs(dy);
+    if (dragMoved > 5) { vcx -= dx / scale; vcy -= dy / scale; applyView(); }
+  } else if (pts.size === 2 && pinch) {
+    const now = pinchState(), rc = cv.getBoundingClientRect();
+    vcx -= (now.mx - pinch.mx) / scale; vcy -= (now.my - pinch.my) / scale; applyView();
+    zoomAt(now.mx - rc.left, now.my - rc.top, now.d / pinch.d);
+    pinch = now;
+  }
+});
+function endPointer(e) {
+  if (!pts.has(e.pointerId)) return;
+  if (e.type === 'pointerup' && pts.size === 1 && dragMoved <= 5) selectAt(e.clientX, e.clientY);
+  pts.delete(e.pointerId);
+  if (pts.size < 2) pinch = null;
+  if (!pts.size) cv.classList.remove('dragging');
+}
+cv.addEventListener('pointerup', endPointer);
+cv.addEventListener('pointercancel', endPointer);
+cv.addEventListener('wheel', e => {
+  e.preventDefault();
+  const rc = cv.getBoundingClientRect();
+  zoomAt(e.clientX - rc.left, e.clientY - rc.top, Math.exp(-e.deltaY * (e.deltaMode ? .05 : .0015)));
+}, { passive: false });
+cv.addEventListener('dblclick', e => { const rc = cv.getBoundingClientRect(); zoomAt(e.clientX - rc.left, e.clientY - rc.top, 2); });
+const zoomCentre = f => zoomAt(viewW / 2, viewH / 2, f);
+document.getElementById('zin').onclick = () => zoomCentre(1.6);
+document.getElementById('zout').onclick = () => zoomCentre(1 / 1.6);
+document.getElementById('zreset').onclick = () => { zoom = 1; applyView(); };
+document.addEventListener('keydown', e => {
+  if (e.target.closest('input, select, textarea') || e.metaKey || e.ctrlKey || e.altKey) return;
+  const step = 80 / scale, keys = { '+': () => zoomCentre(1.4), '=': () => zoomCentre(1.4), '-': () => zoomCentre(1 / 1.4), '0': () => { zoom = 1; applyView(); },
+    ArrowLeft: () => { vcx -= step; applyView(); }, ArrowRight: () => { vcx += step; applyView(); }, ArrowUp: () => { vcy -= step; applyView(); }, ArrowDown: () => { vcy += step; applyView(); } };
+  if (keys[e.key] && (zoom > 1 || !e.key.startsWith('Arrow'))) { keys[e.key](); e.preventDefault(); }
+});
+function selectAt(clientX, clientY) {
+  const rc = cv.getBoundingClientRect(), wx = (clientX - rc.left - ox) / scale, wy = (clientY - rc.top - oy) / scale;
   let best = null, bd = HR * HR * 1.2;
   for (const h of land) { const d = (h.x - wx) ** 2 + (h.y - wy) ** 2; if (d < bd) { bd = d; best = h; } }
   const own = viewEra ? viewEra.snap.owner : owner;
   follow = best && own[best.i] >= 0 ? own[best.i] : null;
   renderCard();
-});
+}
 
 // ---------- controls & loop ----------
 let lastDraw = 0, needDraw = true, paused = false, speed = 1, last = performance.now(), acc = 0, lastWash = -1e9, lastUI = 0;
@@ -1851,17 +2692,27 @@ function frame(now) {
   const dt = Math.min(now - last, 250); last = now;
   // the founding runs fast, but waits while the welcome panel is open so nobody misses it
   const holding = founding && !document.getElementById('away').hidden;
+  updateMoment(now);
   if (!paused && !holding) {
-    acc += dt * TPS * (founding ? FOUNDING_SPEED : speed) / 1000;
+    acc += dt * TPS * (founding ? FOUNDING_SPEED : speed) * momentSlow(now) / 1000;
     let n = 0; while (acc >= 1 && n < 100) { simTick(); acc--; n++; }
     if (acc > 4) acc = 0;
     if (n) needDraw = true;
     if (founding && year() > PRESIM_YEARS) endFounding();
   }
   if (dirty && now - lastWash > 350) {
-    liveFields = territoryFields(owner); liveBorders = borderLines(owner, liveFields);
-    renderWash(washC, owner, liveFields, id => factions[id].color);
-    labels = computeLabels(owner, liveInfo);
+    if (faithMode) {
+      // the faith map: the same washes and borders, drawn by belief instead of by crown
+      const fo = Int16Array.from(faithOf); for (const h of hexes) if (!h.land) fo[h.i] = -1;
+      faithView = fo; liveFields = territoryFields(fo); liveBorders = borderLines(fo, liveFields);
+      renderWash(washC, fo, liveFields, id => faiths[id].color);
+      labels = computeLabels(fo, id => faiths[id] && { id: -1 - id, name: faiths[id].name.replace(/^the /, ''), color: faiths[id].color, capital: -1, sub: '' })
+        .map(l => ({ ...l, ang: l.ang * .35, size: l.size * .8 }));   // long names: keep them level and modest
+    } else {
+      liveFields = territoryFields(owner); liveBorders = borderLines(owner, liveFields);
+      renderWash(washC, owner, liveFields, id => factions[id].color);
+      labels = computeLabels(owner, liveInfo);
+    }
     lastWash = now; dirty = false; ovDirty = true;
   }
   if (needDraw || ovDirty || (!reduceMotion && now - lastDraw > 33)) { draw(); needDraw = false; lastDraw = now; }
