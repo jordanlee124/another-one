@@ -35,7 +35,7 @@ Open `index.html` in a browser. There is no build step and nothing to install. T
 
 ## Pacing
 
-At 1× speed a game year takes four seconds. A realm's rise and fall usually spans 60 to 120 years, which is four to eight minutes. A speed control runs from ½× to 16×. Each new world opens with its first 40 years already written, so there's something to watch straight away.
+At 1× speed a game year takes four seconds. A realm's rise and fall usually spans 60 to 120 years, which is four to eight minutes. A speed control runs from ½× to 16×. A new world plays its first 40 years at 16×, about ten seconds, so you watch the first realms spread across empty land before history settles to normal speed.
 
 ## How it's built
 

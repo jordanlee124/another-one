@@ -38,6 +38,15 @@
   main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; min-height: 0; }
   #mapwrap { position: relative; min-width: 0; min-height: 0; }
   #map { position: absolute; inset: 0; width: 100%; height: 100%; cursor: pointer; display: block; }
+  #founding {
+    position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 1;
+    display: flex; gap: 12px; align-items: center; flex-wrap: wrap; justify-content: center;
+    background: rgba(239,227,196,.95); border: 1px solid var(--ink); padding: 6px 12px; max-width: calc(100% - 32px);
+    box-shadow: 0 2px 8px rgba(0,0,0,.4);
+  }
+  #founding[hidden] { display: none; }
+  #founding #foundyr { color: var(--blood); font-family: "IM Fell English SC", Georgia, serif; }
+  #founding button { background: var(--paper-2); color: var(--ink); border-color: var(--muted); }
   #banner {
     position: absolute; left: 50%; top: 12px; transform: translateX(-50%);
     background: rgba(239,227,196,.95); border: 1px solid var(--ink); padding: 6px 14px;
@@ -136,6 +145,10 @@
     <canvas id="map"></canvas>
     <div id="loading">The cartographer sharpens a quill…</div>
     <div id="banner" hidden></div>
+    <div id="founding" hidden>
+      <span><i>The founding years pass quickly…</i> <span id="foundyr"></span></span>
+      <button id="foundskip">Watch at normal speed</button>
+    </div>
     <div id="away" hidden></div>
     <div id="sharebox" hidden>
       <label for="shareurl">Anyone with this link sees <span id="sharename"></span> from its founding.</label>
@@ -1238,7 +1251,7 @@ function initWorld(s) {
   owner = new Int16Array(hexes.length).fill(-1);
   distArr = new Int16Array(hexes.length).fill(-1);
   factions = []; wars = []; chron = []; eras = []; ruins = []; notes = []; tick = 0; collapse = null; lastWarYear = 0;
-  follow = null; viewEra = null; labels = []; snapLabels = []; puffs = []; fires = []; armies = new Map();
+  founding = false; follow = null; viewEra = null; labels = []; snapLabels = []; puffs = []; fires = []; armies = new Map();
   document.getElementById('chron').innerHTML = '';
   document.getElementById('banner').hidden = true;
   renderLandMask(); renderPaper(); renderInk(); buildGridWeights();
@@ -1251,7 +1264,14 @@ function shareUrl() {
 function setSeedUrl(s) {
   try { const u = new URL(location.href); u.searchParams.set('seed', s); history.replaceState(null, '', u); } catch (e) {}
 }
-const PRESIM_YEARS = 40;
+const PRESIM_YEARS = 40, FOUNDING_SPEED = 16;
+let founding = false;
+function showFounding() {
+  const el = document.getElementById('founding');
+  el.hidden = !founding;
+  if (founding) document.getElementById('foundyr').textContent = `Year ${year()}`;
+}
+function endFounding() { founding = false; showFounding(); saveWorld(); }
 function newWorld(s) {
   initWorld(s);
   // seven founding peoples, spread apart
@@ -1269,8 +1289,8 @@ function newWorld(s) {
   }
   startEra('The Age of Founding', 'found');
   computeStats();
-  // the founding decades are slow to watch, so a new world opens with them already written
-  bulk = true; for (let k = 0; k < PRESIM_YEARS * 12; k++) simTick(); bulk = false;
+  // the founding decades are slow at normal speed, so they play out quickly instead
+  founding = true; showFounding();
   dirty = true; renderCard(); renderTimeline(); resize();
   setSeedUrl(s);
   saveWorld();
@@ -1285,7 +1305,7 @@ const unb64 = str => { const bin = atob(str), u = new Uint8Array(bin.length); fo
 function packWorld(maxSnaps) {
   const now = year();
   return {
-    v: 2, seed, rs, tick, savedAt: Date.now(), paused, speed, follow, worldName,
+    v: 2, seed, rs, tick, savedAt: Date.now(), paused, speed, follow, worldName, founding,
     owner: b64(owner), caps: land.filter(h => tick - h.lastCap < 36).map(h => [h.i, h.lastCap]),
     factions: factions.map(f => {
       const { fronts, wildFront, allies, truce, log, rulers, ...rest } = f;
@@ -1321,6 +1341,7 @@ function restoreWorld(sv) {
   for (const e of chron.slice(-250)) pushChronDom(e);
   speed = sv.speed || 1; document.getElementById('speed').value = String(speed);
   paused = !!sv.paused; document.getElementById('pause').textContent = paused ? 'Resume' : 'Pause';
+  founding = !!sv.founding && year() <= PRESIM_YEARS; showFounding();
   follow = sv.follow != null && factions[sv.follow] ? sv.follow : null;
   computeStats();
   dirty = true; renderCard(); renderTimeline(); resize();
@@ -1779,6 +1800,7 @@ function showEra(e) {
   renderTimeline();
 }
 document.getElementById('banner').onclick = () => showEra(null);
+document.getElementById('foundskip').onclick = () => endFounding();
 document.getElementById('away').addEventListener('click', ev => { const a = ev.target.closest('a.fn'); if (a) { follow = +a.dataset.f; renderCard(); } });
 chronEl.addEventListener('click', ev => { const a = ev.target.closest('a.fn'); if (a) { follow = +a.dataset.f; renderCard(); } });
 document.getElementById('card').addEventListener('click', ev => { const a = ev.target.closest('a.fn'); if (a) { follow = +a.dataset.f; renderCard(); } });
@@ -1827,11 +1849,14 @@ document.addEventListener('visibilitychange', () => {
 
 function frame(now) {
   const dt = Math.min(now - last, 250); last = now;
-  if (!paused) {
-    acc += dt * TPS * speed / 1000;
+  // the founding runs fast, but waits while the welcome panel is open so nobody misses it
+  const holding = founding && !document.getElementById('away').hidden;
+  if (!paused && !holding) {
+    acc += dt * TPS * (founding ? FOUNDING_SPEED : speed) / 1000;
     let n = 0; while (acc >= 1 && n < 100) { simTick(); acc--; n++; }
     if (acc > 4) acc = 0;
     if (n) needDraw = true;
+    if (founding && year() > PRESIM_YEARS) endFounding();
   }
   if (dirty && now - lastWash > 350) {
     liveFields = territoryFields(owner); liveBorders = borderLines(owner, liveFields);
@@ -1843,6 +1868,7 @@ function frame(now) {
   if (now - lastUI > 400) {
     lastUI = now;
     document.getElementById('yr').textContent = `Year ${year()}`;
+    if (founding) showFounding();
     if (follow != null) renderCard();
     const segs = document.getElementById('timeline').children;
     if (segs.length) { const k = segs.length - 1; segs[k].style.flex = `${Math.max(1, year() - eras[k].start)} 1 0`; }
