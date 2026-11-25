@@ -38,6 +38,15 @@
   main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; min-height: 0; }
   #mapwrap { position: relative; min-width: 0; min-height: 0; }
   #map { position: absolute; inset: 0; width: 100%; height: 100%; cursor: pointer; display: block; }
+  #founding {
+    position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 1;
+    display: flex; gap: 12px; align-items: center; flex-wrap: wrap; justify-content: center;
+    background: rgba(239,227,196,.95); border: 1px solid var(--ink); padding: 6px 12px; max-width: calc(100% - 32px);
+    box-shadow: 0 2px 8px rgba(0,0,0,.4);
+  }
+  #founding[hidden] { display: none; }
+  #founding #foundyr { color: var(--blood); font-family: "IM Fell English SC", Georgia, serif; }
+  #founding button { background: var(--paper-2); color: var(--ink); border-color: var(--muted); }
   #banner {
     position: absolute; left: 50%; top: 12px; transform: translateX(-50%);
     background: rgba(239,227,196,.95); border: 1px solid var(--ink); padding: 6px 14px;
@@ -136,6 +145,10 @@
     <canvas id="map"></canvas>
     <div id="loading">The cartographer sharpens a quill…</div>
     <div id="banner" hidden></div>
+    <div id="founding" hidden>
+      <span><i>The founding years pass quickly…</i> <span id="foundyr"></span></span>
+      <button id="foundskip">Watch at normal speed</button>
+    </div>
     <div id="away" hidden></div>
     <div id="sharebox" hidden>
       <label for="shareurl">Anyone with this link sees <span id="sharename"></span> from its founding.</label>
@@ -693,12 +706,13 @@ function drawSeaLife(x) {
   const free = features.openSea.filter(h => seaBoxes.every(b => h.x < b.x0 - 40 || h.x > b.x1 + 40 || h.y < b.y0 - 30 || h.y > b.y1 + 30));
   const used = [];
   const spot = () => { for (let k = 0; k < 60 && free.length; k++) { const h = free[Math.floor(sr() * free.length)]; if (used.every(u => Math.hypot(u.x - h.x, u.y - h.y) > 200)) { used.push(h); return h; } } return null; };
-  for (let k = 0; k < 3; k++) { const h = spot(); if (h) ship(x, h.x, h.y, sr() < .5 ? -1 : 1); }
+  fleet = [];
+  for (let k = 0; k < 4; k++) { const h = spot(); if (h) fleet.push({ x: h.x, y: h.y, tx: h.x, ty: h.y, dir: sr() < .5 ? -1 : 1, id: k }); }
   const sp = spot(); if (sp) serpent(x, sp.x, sp.y);
   x.restore();
 }
 function ship(x, px, py, dir) {
-  x.save(); x.translate(px, py); x.scale(dir, 1); x.strokeStyle = INK; x.lineWidth = .9; x.fillStyle = '#e8d9b2'; x.globalAlpha = .9;
+  x.save(); x.translate(px, py); x.scale(dir * 1.3, 1.3); x.strokeStyle = INK; x.lineWidth = .9; x.fillStyle = '#e8d9b2'; x.globalAlpha = .9;
   x.beginPath(); x.moveTo(-11, 0); x.lineTo(11, 0); x.quadraticCurveTo(9, 5, 5, 6); x.lineTo(-7, 6); x.quadraticCurveTo(-11, 4, -11, 0); x.closePath(); x.fill(); x.stroke();
   x.beginPath(); x.moveTo(0, 0); x.lineTo(0, -17); x.stroke();
   x.beginPath(); x.moveTo(-1, -15); x.quadraticCurveTo(-8, -10, -1, -4); x.closePath(); x.fill(); x.stroke();
@@ -989,7 +1003,9 @@ function attack(X, Y, w, key) {
     const def = t.def * (t.i === Y.capital ? 1.8 : 1) * (1 + .3 * Y.traits.caut);
     if (R() < .3 * px / (px + py * def)) {
       owner[t.i] = X.id; t.lastCap = tick; w[key]++; X.ruler.gained++; Y.ruler.lost++; dirty = true;
+      addPuff(t);
       if (t.i === Y.capital) {
+        fires.push({ i: t.i, until: tick + 24 });
         Y.lostCap = tick + 36; relocateCapital(Y);
         event(`${fn(X)} storms and sacks the capital of ${fn(Y)}. ${rulerName(Y.ruler)} flees.`, [X, Y], lvl(sig(Y), 'big'));
         if (sig(Y)) note(t, `Here ${X.name} sacked the seat of ${Y.name}`);
@@ -1235,7 +1251,7 @@ function initWorld(s) {
   owner = new Int16Array(hexes.length).fill(-1);
   distArr = new Int16Array(hexes.length).fill(-1);
   factions = []; wars = []; chron = []; eras = []; ruins = []; notes = []; tick = 0; collapse = null; lastWarYear = 0;
-  follow = null; viewEra = null; labels = []; snapLabels = [];
+  founding = false; follow = null; viewEra = null; labels = []; snapLabels = []; puffs = []; fires = []; armies = new Map();
   document.getElementById('chron').innerHTML = '';
   document.getElementById('banner').hidden = true;
   renderLandMask(); renderPaper(); renderInk(); buildGridWeights();
@@ -1248,7 +1264,14 @@ function shareUrl() {
 function setSeedUrl(s) {
   try { const u = new URL(location.href); u.searchParams.set('seed', s); history.replaceState(null, '', u); } catch (e) {}
 }
-const PRESIM_YEARS = 40;
+const PRESIM_YEARS = 40, FOUNDING_SPEED = 16;
+let founding = false;
+function showFounding() {
+  const el = document.getElementById('founding');
+  el.hidden = !founding;
+  if (founding) document.getElementById('foundyr').textContent = `Year ${year()}`;
+}
+function endFounding() { founding = false; showFounding(); saveWorld(); }
 function newWorld(s) {
   initWorld(s);
   // seven founding peoples, spread apart
@@ -1266,8 +1289,8 @@ function newWorld(s) {
   }
   startEra('The Age of Founding', 'found');
   computeStats();
-  // the founding decades are slow to watch, so a new world opens with them already written
-  for (let k = 0; k < PRESIM_YEARS * 12; k++) simTick();
+  // the founding decades are slow at normal speed, so they play out quickly instead
+  founding = true; showFounding();
   dirty = true; renderCard(); renderTimeline(); resize();
   setSeedUrl(s);
   saveWorld();
@@ -1282,7 +1305,7 @@ const unb64 = str => { const bin = atob(str), u = new Uint8Array(bin.length); fo
 function packWorld(maxSnaps) {
   const now = year();
   return {
-    v: 2, seed, rs, tick, savedAt: Date.now(), paused, speed, follow, worldName,
+    v: 2, seed, rs, tick, savedAt: Date.now(), paused, speed, follow, worldName, founding,
     owner: b64(owner), caps: land.filter(h => tick - h.lastCap < 36).map(h => [h.i, h.lastCap]),
     factions: factions.map(f => {
       const { fronts, wildFront, allies, truce, log, rulers, ...rest } = f;
@@ -1318,6 +1341,7 @@ function restoreWorld(sv) {
   for (const e of chron.slice(-250)) pushChronDom(e);
   speed = sv.speed || 1; document.getElementById('speed').value = String(speed);
   paused = !!sv.paused; document.getElementById('pause').textContent = paused ? 'Resume' : 'Pause';
+  founding = !!sv.founding && year() <= PRESIM_YEARS; showFounding();
   follow = sv.follow != null && factions[sv.follow] ? sv.follow : null;
   computeStats();
   dirty = true; renderCard(); renderTimeline(); resize();
@@ -1357,7 +1381,7 @@ function catchUp(ms) {
   if (paused || ms < 20000) return;
   const ticks = Math.min(Math.floor(ms / 1000 * TPS), MAX_CATCHUP_YEARS * 12);
   const y0 = year(), c0 = chron.length, alive0 = new Set(aliveList().map(f => f.id)), f0 = factions.length;
-  for (let k = 0; k < ticks; k++) simTick();
+  bulk = true; for (let k = 0; k < ticks; k++) simTick(); bulk = false;
   dirty = true;
   const yrs = year() - y0; if (yrs < 1) return;
   const fresh = chron.slice(c0), fell = [...alive0].filter(id => !factions[id].alive).length;
@@ -1506,6 +1530,110 @@ function noteCorner(x, n) {
   n.box = noteBox(n, best, w);
   return best;
 }
+// ---------- animation: armies, battle smoke, burning capitals, plague, ships ----------
+const reduceMotion = (() => { try { return matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) { return false; } })();
+let bulk = false, puffs = [], fires = [], fleet = [], armies = new Map(), lastAnimReal = 0, lastAnimSim = 0, animFrame = 0;
+const PUFF_MS = 1100;
+function addPuff(h) {
+  if (reduceMotion || bulk) return;   // no smoke for years simulated in a blink
+  puffs.push({ x: h.x + (Math.random() - .5) * 10, y: h.y + (Math.random() - .5) * 8, t: performance.now() });
+  if (puffs.length > 30) puffs.shift();
+}
+const seaAt = (px, py) => { const i = Math.round(px / GS), j = Math.round(py / GS); return i >= 0 && j >= 0 && i < gw && j < gh && F[j * gw + i] < thr - .015; };
+function clearPath(a, bx, by) {
+  const d = Math.hypot(bx - a.x, by - a.y);
+  for (let s = 0; s <= d; s += 8) if (!seaAt(a.x + (bx - a.x) * s / d, a.y + (by - a.y) * s / d)) return false;
+  return true;
+}
+function drawAnim(x, now) {
+  const dtReal = Math.min(.1, (now - (lastAnimReal || now)) / 1000); lastAnimReal = now;
+  const simNow = tick + acc, dtSim = clamp(simNow - lastAnimSim, 0, 6); lastAnimSim = simNow;
+  animFrame++;
+  x.save(); x.lineCap = 'round'; x.lineJoin = 'round';
+  // ships wander the open sea, never across land
+  for (const sh of fleet) {
+    if (!reduceMotion) {
+      const dx = sh.tx - sh.x, dy = sh.ty - sh.y, d = Math.hypot(dx, dy), step = 9 * dtReal;
+      if (d <= step) {
+        const pool = features.openSea;
+        for (let k = 0; k < 12 && pool.length; k++) {
+          const h = pool[Math.floor(Math.random() * pool.length)];
+          if (Math.hypot(h.x - sh.x, h.y - sh.y) < 320 && clearPath(sh, h.x, h.y) && seaBoxes.every(b => h.x < b.x0 - 20 || h.x > b.x1 + 20 || h.y < b.y0 - 20 || h.y > b.y1 + 20)) { sh.tx = h.x; sh.ty = h.y; break; }
+        }
+      } else { sh.x += dx / d * step; sh.y += dy / d * step; if (Math.abs(dx) > 1) sh.dir = dx > 0 ? 1 : -1; }
+    }
+    ship(x, sh.x, sh.y + Math.sin(now / 650 + sh.id) * .8, sh.dir);
+  }
+  // armies march from their capital to the front, then hold it
+  for (const w of wars) {
+    if (!w.mark) continue;
+    const pa = hexes[w.mark.a], pb = hexes[w.mark.b], mx = (pa.x + pb.x) / 2, my = (pa.y + pb.y) / 2;
+    for (const [fid, p] of [[w.a, pa], [w.b, pb]]) {
+      const f = factions[fid]; if (!f || !f.alive) continue;
+      const key = `${w.start}:${w.a}:${w.b}:${fid}`, tx = mx + (p.x - mx) * .85, ty = my + (p.y - my) * .85;
+      let a = armies.get(key);
+      if (!a) { const c = hexes[f.capital]; a = { x: c.x, y: c.y }; armies.set(key, a); }
+      const dx = tx - a.x, dy = ty - a.y, d = Math.hypot(dx, dy), step = reduceMotion ? d : dtSim * 10;
+      a.moving = d > step + .5;
+      if (a.moving) { a.x += dx / d * step; a.y += dy / d * step; } else { a.x = tx; a.y = ty; }
+      a.frame = animFrame;
+      drawArmy(x, a, f.color, now);
+    }
+  }
+  for (const [k, a] of armies) if (a.frame !== animFrame) armies.delete(k);
+  // burning capitals
+  fires = fires.filter(fr => fr.until > tick);
+  for (const fr of fires) {
+    const h0 = hexes[fr.i];
+    x.save(); x.translate(h0.x, h0.y); x.scale(1.8, 1.8);
+    const h = { x: 0, y: 0 };
+    for (let k = 0; k < 4; k++) {
+      const ph = reduceMotion ? k / 4 : (now / 1500 + k / 4) % 1, r = 2 + ph * 5;
+      x.fillStyle = `rgba(70,60,52,${.32 * (1 - ph)})`;
+      x.beginPath(); x.arc(h.x + Math.sin(ph * 6 + k) * 4, h.y - 10 - ph * 26, r, 0, 7); x.fill();
+    }
+    for (let k = 0; k < 3; k++) {
+      const fl = reduceMotion ? 1 : .75 + .25 * Math.sin(now / 80 + k * 2.1), hgt = (7 + k % 2 * 3) * fl, fx = h.x - 4 + k * 4;
+      x.fillStyle = k === 1 ? '#e08a2c' : '#c4471c';
+      x.beginPath(); x.moveTo(fx - 2.5, h.y - 2); x.quadraticCurveTo(fx - 2.5, h.y - hgt * .6, fx, h.y - hgt); x.quadraticCurveTo(fx + 2.5, h.y - hgt * .6, fx + 2.5, h.y - 2); x.closePath(); x.fill();
+    }
+    x.restore();
+  }
+  // a sickly haze circles the capital of a plague-stricken realm
+  x.fillStyle = 'rgba(92,116,48,.85)';
+  for (const f of factions) {
+    if (!f.alive || f.plague <= 0) continue;
+    const c = hexes[f.capital];
+    for (let k = 0; k < 7; k++) {
+      const an = (reduceMotion ? 0 : now / 1600) + k * .9, rr = 20 + 4 * Math.sin((reduceMotion ? 0 : now / 700) + k);
+      x.beginPath(); x.arc(c.x + Math.cos(an) * rr, c.y - 4 + Math.sin(an) * rr * .6, 2.6, 0, 7); x.fill();
+    }
+  }
+  // smoke where a province has just fallen
+  puffs = puffs.filter(pf => now - pf.t < PUFF_MS);
+  for (const pf of puffs) {
+    const age = (now - pf.t) / PUFF_MS;
+    if (age < .14) { x.fillStyle = `rgba(214,120,40,${.9 * (1 - age / .14)})`; x.beginPath(); x.arc(pf.x, pf.y, 5 + age * 24, 0, 7); x.fill(); }
+    for (let k = 0; k < 3; k++) {
+      x.fillStyle = `rgba(80,70,60,${.34 * (1 - age)})`;
+      x.beginPath(); x.arc(pf.x + (k - 1) * 6 * (1 + age), pf.y - age * 22 - k * 3, 4 + age * 9, 0, 7); x.fill();
+    }
+  }
+  x.restore();
+}
+function drawArmy(x, a, color, now) {
+  x.save(); x.translate(a.x, a.y); x.scale(1.7, 1.7);
+  x.strokeStyle = INK; x.lineWidth = 1;
+  x.beginPath(); x.moveTo(0, 3); x.lineTo(0, -12); x.stroke();
+  const wave = a.moving && !reduceMotion ? Math.sin(now / 140) * 1.2 : 0;
+  x.fillStyle = color; x.beginPath(); x.moveTo(0, -12); x.lineTo(8, -10.5 + wave); x.lineTo(0, -7.5); x.closePath(); x.fill(); x.stroke();
+  x.fillStyle = INK;
+  for (let k = 0; k < 3; k++) {
+    const bob = a.moving && !reduceMotion ? Math.abs(Math.sin(now / 160 + k * 1.3)) * 1.6 : 0;
+    x.beginPath(); x.arc(-5 + k * 4 + 2, 4 - bob, 1.3, 0, 7); x.fill();
+  }
+  x.restore();
+}
 function drawNotes(x) {
   x.save();
   for (const n of notes) {
@@ -1599,7 +1727,7 @@ function draw() {
     ovDirty = false;
   }
   ctx.drawImage(ovC, 0, 0, MW, MH);
-  if (!viewEra) drawNotes(ctx);
+  if (!viewEra) { drawAnim(ctx, performance.now()); drawNotes(ctx); }
 }
 
 // ---------- side panel ----------
@@ -1672,6 +1800,7 @@ function showEra(e) {
   renderTimeline();
 }
 document.getElementById('banner').onclick = () => showEra(null);
+document.getElementById('foundskip').onclick = () => endFounding();
 document.getElementById('away').addEventListener('click', ev => { const a = ev.target.closest('a.fn'); if (a) { follow = +a.dataset.f; renderCard(); } });
 chronEl.addEventListener('click', ev => { const a = ev.target.closest('a.fn'); if (a) { follow = +a.dataset.f; renderCard(); } });
 document.getElementById('card').addEventListener('click', ev => { const a = ev.target.closest('a.fn'); if (a) { follow = +a.dataset.f; renderCard(); } });
@@ -1685,7 +1814,7 @@ cv.addEventListener('click', ev => {
 });
 
 // ---------- controls & loop ----------
-let needDraw = true, paused = false, speed = 1, last = performance.now(), acc = 0, lastWash = -1e9, lastUI = 0;
+let lastDraw = 0, needDraw = true, paused = false, speed = 1, last = performance.now(), acc = 0, lastWash = -1e9, lastUI = 0;
 document.getElementById('pause').onclick = e => { paused = !paused; e.target.textContent = paused ? 'Resume' : 'Pause'; saveWorld(); };
 document.getElementById('speed').onchange = e => { speed = +e.target.value; saveWorld(); };
 document.getElementById('share').onclick = () => {
@@ -1720,11 +1849,14 @@ document.addEventListener('visibilitychange', () => {
 
 function frame(now) {
   const dt = Math.min(now - last, 250); last = now;
-  if (!paused) {
-    acc += dt * TPS * speed / 1000;
+  // the founding runs fast, but waits while the welcome panel is open so nobody misses it
+  const holding = founding && !document.getElementById('away').hidden;
+  if (!paused && !holding) {
+    acc += dt * TPS * (founding ? FOUNDING_SPEED : speed) / 1000;
     let n = 0; while (acc >= 1 && n < 100) { simTick(); acc--; n++; }
     if (acc > 4) acc = 0;
     if (n) needDraw = true;
+    if (founding && year() > PRESIM_YEARS) endFounding();
   }
   if (dirty && now - lastWash > 350) {
     liveFields = territoryFields(owner); liveBorders = borderLines(owner, liveFields);
@@ -1732,10 +1864,11 @@ function frame(now) {
     labels = computeLabels(owner, liveInfo);
     lastWash = now; dirty = false; ovDirty = true;
   }
-  if (needDraw || ovDirty) { draw(); needDraw = false; }
+  if (needDraw || ovDirty || (!reduceMotion && now - lastDraw > 33)) { draw(); needDraw = false; lastDraw = now; }
   if (now - lastUI > 400) {
     lastUI = now;
     document.getElementById('yr').textContent = `Year ${year()}`;
+    if (founding) showFounding();
     if (follow != null) renderCard();
     const segs = document.getElementById('timeline').children;
     if (segs.length) { const k = segs.length - 1; segs[k].style.flex = `${Math.max(1, year() - eras[k].start)} 1 0`; }
@@ -1746,7 +1879,7 @@ function frame(now) {
 // test hook: run the simulation headless for n years
 window.__sim = {
   save: () => saveWorld(), pack: () => packWorld(40), catchUp: ms => catchUp(ms),
-  years(n) { for (let k = 0; k < n * 12; k++) simTick(); dirty = true; return this.stats(); },
+  years(n) { bulk = true; for (let k = 0; k < n * 12; k++) simTick(); bulk = false; dirty = true; return this.stats(); },
   stats() {
     const al = aliveList(), top = al.reduce((a, b) => (b.size > (a?.size ?? -1) ? b : a), null);
     return { year: year(), alive: al.length, wars: wars.length, topShare: top ? +(top.size / landCount).toFixed(2) : 0,

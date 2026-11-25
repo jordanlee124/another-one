@@ -17,7 +17,9 @@ Open `index.html` in a browser. There is no build step and nothing to install. T
 
 ## What it does
 
-**No two worlds share a shape.** Each seed picks a kind of world: a single continent, twin lands divided by a winding strait, a continent wrapped around an inland sea, or an archipelago. Mountains follow ridgelines, so they form ranges instead of blobs. Every sea, lake, mountain range, great forest and desert gets a name. Short dotted sea lanes link separate landmasses, so island realms can be reached and conquered. Ships and the occasional sea serpent fill the open water.
+**No two worlds share a shape.** Each seed picks a kind of world: a single continent, twin lands divided by a winding strait, a continent wrapped around an inland sea, or an archipelago. Mountains follow ridgelines, so they form ranges instead of blobs. Every sea, lake, mountain range, great forest and desert gets a name. Short dotted sea lanes link separate landmasses, so island realms can be reached and conquered. Ships sail the open water, and the occasional sea serpent lurks there.
+
+**Wars show on the map.** Each side's army marches under its banner from the capital to the front and holds the line there. Smoke rises wherever a province changes hands, a sacked capital burns for two years, and a sickly haze circles the capital of a plague-stricken realm. Visitors who ask their system for reduced motion see all of this standing still.
 
 **The map is drawn, not tiled.** Each world is generated from a seed. Fractal noise makes the terrain. The coastline and the offshore ripple lines are traced from the height map with marching squares. Mountains, hills, forests and dunes are drawn as ink symbols, and rivers run downhill to the sea. Each realm's territory is a smooth field rather than a set of hexes: its watercolour wash and its dash-dot border are contours of that field, so borders curve the way a cartographer would draw them.
 
@@ -33,7 +35,7 @@ Open `index.html` in a browser. There is no build step and nothing to install. T
 
 ## Pacing
 
-At 1× speed a game year takes four seconds. A realm's rise and fall usually spans 60 to 120 years, which is four to eight minutes. A speed control runs from ½× to 16×. Each new world opens with its first 40 years already written, so there's something to watch straight away.
+At 1× speed a game year takes four seconds. A realm's rise and fall usually spans 60 to 120 years, which is four to eight minutes. A speed control runs from ½× to 16×. A new world plays its first 40 years at 16×, about ten seconds, so you watch the first realms spread across empty land before history settles to normal speed.
 
 ## How it's built
 
@@ -43,6 +45,6 @@ Everything is in one file, `index.html`: about 1,500 lines of plain JavaScript a
 2. **Washes.** Watercolour territory. Redrawn only when borders move.
 3. **Ink.** Coastlines, terrain symbols, rivers, frame, compass and cartouche. Drawn once per world.
 4. **Overlay.** Borders, names, capitals and ruins. Redrawn when something changes.
-5. **Live marks.** Front lines, fresh conquests and map notes. Drawn each simulated month.
+5. **Live marks.** Armies, battle smoke, fires, plague, ships, fresh conquests and map notes. Animated at about 30 frames a second.
 
 Typefaces: IM Fell English and IM Fell English SC by Igino Marini, under the SIL Open Font License.
