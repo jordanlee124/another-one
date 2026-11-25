@@ -1856,22 +1856,16 @@ function drawOverlay(x, own, labs, live, fields, borders) {
   }
   // towns and cities, then their names where there is room
   if (live) {
-    const arms = new Map();
-    for (const r of roads.values()) {
-      const a = hexes[r.a], b = hexes[r.b];
-      if (!arms.has(r.a)) arms.set(r.a, []); if (!arms.has(r.b)) arms.set(r.b, []);
-      arms.get(r.a).push(Math.atan2(b.y - a.y, b.x - a.x)); arms.get(r.b).push(Math.atan2(a.y - b.y, a.x - b.x));
-    }
     const reach = new Map();
     for (const t of towns) drawFields(x, t);          // all farmland first, so no town's fields cover another's houses
-    for (const t of towns) { if (t.ruined) drawTown(x, t); else reach.set(t, drawSettlement(x, t, arms.get(t.i) || [])); }
+    for (const t of towns) { if (t.ruined) drawTown(x, t); else reach.set(t, drawSettlement(x, t)); }
     x.textBaseline = 'middle';
     for (const t of [...towns].filter(t => !t.ruined && t.pop >= TOWN && !factions.some(f => f.alive && f.capital === t.i)).sort((a, b) => b.pop - a.pop)) {
       const h = hexes[t.i], fs = (11 + Math.min(7, t.pop)) * LZ;
       x.font = `${t.pop >= CITY ? '' : 'italic '}${fs}px "IM Fell English${t.pop >= GREAT ? ' SC' : ''}", Georgia, serif`;
       const w = x.measureText(t.name).width;
       for (const side of [1, -1]) {
-        const tx = h.x + side * (Math.min(reach.get(t) || 8, 22) + 4), b = side > 0 ? { x0: tx, x1: tx + w, y0: h.y - fs * .6, y1: h.y + fs * .6 } : { x0: tx - w, x1: tx, y0: h.y - fs * .6, y1: h.y + fs * .6 };
+        const tx = h.x + side * (Math.min(reach.get(t) || 8, 40) + 3), b = side > 0 ? { x0: tx, x1: tx + w, y0: h.y - fs * .6, y1: h.y + fs * .6 } : { x0: tx - w, x1: tx, y0: h.y - fs * .6, y1: h.y + fs * .6 };
         if (hit(b) || !inFrame(b)) continue;
         boxes.push(b); x.textAlign = side > 0 ? 'left' : 'right';
         x.lineWidth = 3; x.strokeStyle = 'rgba(236,222,186,.8)'; x.strokeText(t.name, tx, h.y); x.fillStyle = '#3a2b1c'; x.fillText(t.name, tx, h.y);
@@ -2197,26 +2191,7 @@ function drawRoads(x) {
   }
   x.setLineDash([]); x.globalAlpha = 1;
 }
-// each settlement has a fixed, seeded set of building plots spiralling out from its centre;
-// it fills them in order as it grows, so growth reads as sprawl and decline leaves empty plots
-const plotCache = new Map();
-function plotsFor(t) {
-  const key = t.i + ':' + t.founded; let s = plotCache.get(key); if (s) return s;
-  const rr = mulberry32((seed ^ Math.imul(t.i + 1, 2654435761) ^ t.founded) >>> 0); s = [];
-  for (let k = 0; k < 190; k++) s.push({ a: rr() * Math.PI * 2, r: Math.sqrt(k) * 2.9 * (.8 + rr() * .4), rot: (rr() - .5) * .9, w: 1.8 + rr() * 1.4, h: 1.4 + rr() * .9 });
-  s.sort((p, q) => p.r - q.r); plotCache.set(key, s); return s;
-}
-function plotPos(h, p, arms) {
-  // plots near a road reach further out, so towns stretch along their roads
-  let st = 1; for (const a of arms) { const c = Math.cos(p.a - a); if (c > 0) st = Math.max(st, 1 + .9 * c ** 6); }
-  return [h.x + Math.cos(p.a) * p.r * st, h.y + Math.sin(p.a) * p.r * st * .85];
-}
 const onLand = (px, py) => F[clamp(Math.round(py / GS), 0, gh - 1) * gw + clamp(Math.round(px / GS), 0, gw - 1)] > thr + .004;
-function houseShape(path, px, py, p, k) {
-  const c = Math.cos(p.rot), sn = Math.sin(p.rot), w = p.w * k, hh = p.h * k;
-  const pts = [[-w, -hh], [w, -hh], [w, hh], [-w, hh]].map(([u, v]) => [px + u * c - v * sn, py + u * sn + v * c]);
-  path.moveTo(pts[0][0], pts[0][1]); for (let i = 1; i < 4; i++) path.lineTo(pts[i][0], pts[i][1]); path.closePath();
-}
 // roof colours: each town builds in its own materials (tile, slate, thatch, brick)
 const ROOF_SETS = [['#8f4c33', '#a85f40', '#b8714d'], ['#5d636d', '#737984', '#888e98'], ['#94703f', '#a9824c', '#bb955c'], ['#7a4634', '#925640', '#a5684c']];
 function houseOutline(path, px, py, p) {
@@ -2263,77 +2238,125 @@ function nearestHex(px, py) {
   const r = clamp(Math.round((py - Y0) / (1.5 * HR)), 0, ROWS - 1), c = clamp(Math.round((px - X0) / (SQ3 * HR) - .5 * (r & 1)), 0, COLS - 1);
   return r * COLS + c;
 }
-// farmland: an irregular patchwork of plots around the town; bigger, richer towns farm a wider band
+// ---------- planned towns ----------
+// Every settlement is laid out on its own street grid: square blocks around a central market square.
+// Houses line each block facing the street. The town grows along its two main streets first, then fills
+// the quarters between, block by block, so even its growth looks planned.
+const BLOCK = 8, STREET = 1.8, HALF = (BLOCK - STREET) / 2;
+const planCache = new Map();
+function townPlan(t) {
+  const key = t.i + ':' + t.founded; let pl = planCache.get(key); if (pl) return pl;
+  const rr = mulberry32((seed ^ Math.imul(t.i + 1, 2654435761) ^ t.founded) >>> 0), h = hexes[t.i];
+  const ang = rr() * Math.PI / 2, c = Math.cos(ang), sn = Math.sin(ang);
+  const toW = (u, v) => [h.x + u * c - v * sn, h.y + u * sn + v * c];
+  const blocks = [];
+  for (let i = -4; i <= 4; i++) for (let j = -4; j <= 4; j++) if (i || j) blocks.push({ i, j, d: Math.hypot(i, j) - (i === 0 || j === 0 ? .7 : 0) + rr() * .25 });
+  blocks.sort((p, q) => p.d - q.d);
+  const slots = [], depth = 1.5;
+  blocks.forEach((b, bi) => {
+    const cu = b.i * BLOCK, cv = b.j * BLOCK;
+    // three houses along each side of the block, set back from the street; the middle is a courtyard
+    for (const [su, sv] of [[0, -1], [1, 0], [0, 1], [-1, 0]]) for (const off of [-.62, 0, .62]) {
+      const [x, y] = toW(cu + su * (HALF - depth) - sv * off * HALF, cv + sv * (HALF - depth) + su * off * HALF);
+      slots.push({ x, y, bi, w: 1.45 + rr() * .3 });
+    }
+  });
+  pl = { toW, blocks, slots, h, rr: rr() * 1e9 | 0 };
+  planCache.set(key, pl); return pl;
+}
+// the plots a town occupies at a given size, skipping any that fall in the sea
+function occupied(pl, count) {
+  const out = [];
+  for (const sl of pl.slots) { if (out.length >= count) break; if (onLand(sl.x, sl.y)) out.push(sl); }
+  return out;
+}
+const blockSquare = (pl, i, j, inset = 0) => [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([a, b]) => pl.toW(i * BLOCK + a * (BLOCK / 2 - inset), j * BLOCK + b * (BLOCK / 2 - inset)));
+function polyPath(path, pts) { path.moveTo(...pts[0]); for (let q = 1; q < pts.length; q++) path.lineTo(...pts[q]); path.closePath(); }
+// fields: a grid of strip fields aligned with the town's streets, filled ring by ring outside the built blocks
 function drawFields(x, t) {
   if (t.ruined || t.pop < .4) return;
-  const h = hexes[t.i], plots = plotsFor(t), n = Math.min(plots.length, builtCount(t.pop));
-  const f = owner[t.i] >= 0 ? factions[owner[t.i]] : null, lush = f && f.golden > tick;
-  const edge = plots[Math.min(n, plots.length - 1)].r + 3, rr = mulberry32(t.i * 7919 + 1);
-  const band = 6 + Math.min(3, t.pop * .5) * 5, tints = lush ? FIELD_LUSH : FIELD_TINTS;
-  const want = Math.round(clamp(8 + t.pop * 9, 8, 60)), placed = [];
-  const furrows = new Path2D(), edges = new Path2D(), byTint = tints.map(() => new Path2D());
-  for (let tries = 0; tries < want * 4 && placed.length < want; tries++) {
-    const a = rr() * Math.PI * 2, r = edge + Math.pow(rr(), 1.4) * band, cx = h.x + Math.cos(a) * r, cy = h.y + Math.sin(a) * r * .85;
-    if (!onLand(cx, cy) || placed.some(([px, py]) => (px - cx) ** 2 + (py - cy) ** 2 < 30)) continue;
+  const pl = townPlan(t), live = occupied(pl, builtCount(t.pop));
+  let reach = 0; for (const sl of live) { const b = pl.blocks[sl.bi]; reach = Math.max(reach, Math.abs(b.i), Math.abs(b.j)); }
+  const f = owner[t.i] >= 0 ? factions[owner[t.i]] : null, tints = f && f.golden > tick ? FIELD_LUSH : FIELD_TINTS;
+  const want = Math.round(clamp(4 + t.pop * 6, 4, 56)), rr = mulberry32(pl.rr), cells = [];
+  for (let i = -reach - 4; i <= reach + 4; i++) for (let j = -reach - 4; j <= reach + 4; j++) {
+    const ring = Math.max(Math.abs(i), Math.abs(j)) - reach; if (ring < 1) continue;
+    cells.push({ i, j, d: ring + Math.hypot(i, j) * .05 });
+  }
+  cells.sort((p, q) => p.d - q.d);
+  const byTint = tints.map(() => new Path2D()), edges = new Path2D(), furrows = new Path2D(); let n = 0;
+  for (const cell of cells) {
+    if (n >= want) break;
+    const [cx, cy] = pl.toW(cell.i * BLOCK, cell.j * BLOCK);
+    if (!onLand(cx, cy)) continue;
     const hx = hexes[nearestHex(cx, cy)]; if (hx && hx.terrain === 'mountain') continue;
-    placed.push([cx, cy]);
-    const fw = 2.4 + rr() * 1.4, fh = 1.8 + rr() * 1, tilt = rr() * Math.PI;
-    const c = Math.cos(tilt), sn = Math.sin(tilt), corner = (u, v) => [cx + u * c - v * sn, cy + u * sn + v * c];
-    const P = [corner(-fw, -fh), corner(fw, -fh), corner(fw, fh), corner(-fw, fh)];
-    for (const path of [byTint[Math.floor(rr() * tints.length)], edges]) { path.moveTo(...P[0]); for (let q = 1; q < 4; q++) path.lineTo(...P[q]); path.closePath(); }
-    for (let l = -1; l <= 1; l++) { const [ax, ay] = corner(-fw * .8, l * fh * .5), [bx, by] = corner(fw * .8, l * fh * .5); furrows.moveTo(ax, ay); furrows.lineTo(bx, by); }
+    n++;
+    // three strips per field, the strips running one way or the other in alternate fields
+    const along = (cell.i + cell.j) % 2 === 0, inset = .5, w = BLOCK / 2 - inset, strip = (2 * w) / 3;
+    for (let k = 0; k < 3; k++) {
+      const a0 = -w + k * strip + .15, a1 = a0 + strip - .3;
+      const pts = (along ? [[a0, -w], [a1, -w], [a1, w], [a0, w]] : [[-w, a0], [w, a0], [w, a1], [-w, a1]]).map(([u, v]) => pl.toW(cell.i * BLOCK + u, cell.j * BLOCK + v));
+      polyPath(byTint[Math.floor(rr() * tints.length)], pts); polyPath(edges, pts);
+      const m = (a0 + a1) / 2, [p0, p1] = along ? [[m, -w + .6], [m, w - .6]] : [[-w + .6, m], [w - .6, m]];
+      const A = pl.toW(cell.i * BLOCK + p0[0], cell.j * BLOCK + p0[1]), B = pl.toW(cell.i * BLOCK + p1[0], cell.j * BLOCK + p1[1]);
+      furrows.moveTo(...A); furrows.lineTo(...B);
+    }
   }
   x.save();
   tints.forEach((col, i) => { x.fillStyle = col; x.fill(byTint[i]); });
-  x.strokeStyle = 'rgba(90,70,40,.4)'; x.lineWidth = .35; x.stroke(edges);
-  x.strokeStyle = 'rgba(90,70,40,.28)'; x.lineWidth = .3; x.stroke(furrows);
+  x.strokeStyle = 'rgba(90,70,40,.4)'; x.lineWidth = .3; x.stroke(edges);
+  x.strokeStyle = 'rgba(90,70,40,.3)'; x.lineWidth = .3; x.stroke(furrows);
   x.restore();
 }
-function drawSettlement(x, t, arms) {
-  const h = hexes[t.i], plots = plotsFor(t);
-  const n = Math.min(plots.length, builtCount(t.pop)), peakN = Math.min(plots.length, builtCount(t.peak || t.pop));
-  const pos = plots.map(p => plotPos(h, p, arms));
-  x.save(); x.lineJoin = 'round';
+function drawSettlement(x, t) {
+  const pl = townPlan(t), h = pl.h, want = builtCount(t.pop), peak = Math.max(want, builtCount(t.peak || t.pop));
+  const all = occupied(pl, peak), live = all.slice(0, want), ghost = all.slice(want);
+  const used = new Set(live.map(sl => sl.bi)), isTown = t.pop >= TOWN;
+  x.save(); x.lineJoin = 'round'; x.lineCap = 'round';
+  // streets: the edge of every block in use, plus the market square at the centre
+  const streets = new Path2D();
+  for (const bi of used) { const b = pl.blocks[bi]; polyPath(streets, blockSquare(pl, b.i, b.j, STREET / 2)); }
+  if (isTown) {
+    const plaza = new Path2D(); polyPath(plaza, blockSquare(pl, 0, 0, STREET / 2));
+    x.fillStyle = 'rgba(226,207,158,.9)'; x.fill(plaza); polyPath(streets, blockSquare(pl, 0, 0, STREET / 2));
+  }
+  x.strokeStyle = 'rgba(120,92,58,.6)'; x.lineWidth = .5; x.stroke(streets);
   // districts abandoned since the town's height: the dotted outlines of empty houses
-  if (peakN > n) {
-    const ghost = new Path2D();
-    for (let k = n; k < peakN; k++) if (onLand(pos[k][0], pos[k][1])) houseOutline(ghost, pos[k][0], pos[k][1], plots[k]);
-    x.setLineDash([.6, 1.2]); x.strokeStyle = 'rgba(90,70,50,.55)'; x.lineWidth = .4; x.stroke(ghost); x.setLineDash([]);
+  if (ghost.length) {
+    const gp = new Path2D(); for (const sl of ghost) houseOutline(gp, sl.x, sl.y, sl);
+    x.setLineDash([.6, 1.2]); x.strokeStyle = 'rgba(90,70,40,.55)'; x.lineWidth = .4; x.stroke(gp); x.setLineDash([]);
   }
-  // a city raises walls, with battlements and towers, around the plots it held when it became one;
-  // later growth spills outside them
+  // a city walls in the blocks it held when it became one, with towers at the corners and gatehouses
+  // where its main streets leave; harbour sides stay open to the sea
   if (t.pop >= CITY) {
-    const wr = plots[Math.min(builtCount(CITY), plots.length) - 1].r + 3, ry = wr * .85;
-    // the wall runs only over land: a harbour city is open to the sea
-    const N = 72, pt = k => { const a = k / N * Math.PI * 2; return [h.x + Math.cos(a) * wr, h.y + Math.sin(a) * ry]; };
-    const wallPath = new Path2D();
-    for (let k = 0; k < N; k++) {
-      const [ax, ay] = pt(k), [bx, by] = pt(k + 1);
-      if (onLand(ax, ay) && onLand(bx, by)) { wallPath.moveTo(ax, ay); wallPath.lineTo(bx, by); }
+    let i0 = 0, i1 = 0, j0 = 0, j1 = 0;
+    for (const sl of occupied(pl, builtCount(CITY))) { const b = pl.blocks[sl.bi]; i0 = Math.min(i0, b.i); i1 = Math.max(i1, b.i); j0 = Math.min(j0, b.j); j1 = Math.max(j1, b.j); }
+    const m = 1.2, U0 = (i0 - .5) * BLOCK - m, U1 = (i1 + .5) * BLOCK + m, V0 = (j0 - .5) * BLOCK - m, V1 = (j1 + .5) * BLOCK + m;
+    const ring = [[U0, V0], [U1, V0], [U1, V1], [U0, V1], [U0, V0]], wall = new Path2D(), merlons = new Path2D();
+    for (let e = 0; e < 4; e++) {
+      const [ua, va] = ring[e], [ub, vb] = ring[e + 1], len = Math.hypot(ub - ua, vb - va), steps = Math.max(2, Math.round(len / 1.5));
+      for (let k = 0; k < steps; k++) {
+        const A = pl.toW(ua + (ub - ua) * k / steps, va + (vb - va) * k / steps), B = pl.toW(ua + (ub - ua) * (k + 1) / steps, va + (vb - va) * (k + 1) / steps);
+        if (!onLand(...A) || !onLand(...B)) continue;
+        wall.moveTo(...A); wall.lineTo(...B); merlons.moveTo(...A); merlons.lineTo(A[0], A[1] - 1.2);
+      }
     }
-    x.lineCap = 'round';
-    x.strokeStyle = INK; x.lineWidth = 1.8; x.stroke(wallPath);
-    x.strokeStyle = '#e6d5a8'; x.lineWidth = .7; x.stroke(wallPath);
-    x.strokeStyle = INK; x.lineWidth = .55; x.beginPath();
-    for (let k = 0; k < 56; k++) { const a = k / 56 * Math.PI * 2, px = h.x + Math.cos(a) * wr, py = h.y + Math.sin(a) * ry; if (onLand(px, py)) { x.moveTo(px, py); x.lineTo(px, py - 1.3); } }
-    x.stroke();
-    const nt = t.pop >= GREAT ? 8 : 6;
-    for (let k = 0; k < nt; k++) { const a = (k + .5) / nt * Math.PI * 2, px = h.x + Math.cos(a) * wr, py = h.y + Math.sin(a) * ry; if (onLand(px, py)) wallTower(x, px, py); }
+    x.strokeStyle = INK; x.lineWidth = 1.8; x.stroke(wall);
+    x.strokeStyle = '#e6d5a8'; x.lineWidth = .7; x.stroke(wall);
+    x.strokeStyle = INK; x.lineWidth = .5; x.stroke(merlons);
+    const towers = [[U0, V0], [U1, V0], [U1, V1], [U0, V1], [0, V0], [0, V1], [U0, 0], [U1, 0]];
+    for (const [u, v] of towers) { const P = pl.toW(u, v); if (onLand(...P)) wallTower(x, P[0], P[1]); }
   }
-  // the buildings themselves, drawn back to front as little elevations, the way old maps draw a town
-  const coreN = t.pop >= TOWN ? Math.round(n * .3) : 0, detail = zoom >= 1.6;
-  const roofs = ROOF_SETS[t.i % ROOF_SETS.length], dome = owner[t.i] >= 0 && factions[owner[t.i]].faith % 2 === 1;
-  const order = [];
-  for (let k = 0; k < n; k++) if (onLand(pos[k][0], pos[k][1])) order.push(k);
-  order.sort((a, b) => pos[a][1] - pos[b][1]);
-  for (const k of order) {
-    const p = plots[k];
-    const kind = k === 0 && t.pop >= TOWN ? 'temple' : k === 1 && t.pop >= GREAT ? 'palace'
-      : t.pop >= CITY && k > 1 && k <= coreN && k % 9 === 3 ? 'tower' : p.w > 2.9 ? 'long' : 'house';
-    building(x, kind, pos[k][0], pos[k][1], p, k < coreN ? roofs[0] : roofs[1 + (k % 2)], dome, detail);
-  }
+  // the buildings, back to front: houses lining the blocks, the temple and palace facing the square
+  const roofs = ROOF_SETS[t.i % ROOF_SETS.length], dome = owner[t.i] >= 0 && factions[owner[t.i]].faith % 2 === 1, detail = zoom >= 1.6;
+  const items = live.map((sl, k) => ({ x: sl.x, y: sl.y, p: sl, kind: t.pop >= CITY && k % 23 === 11 ? 'tower' : 'house', roof: roofs[pl.blocks[sl.bi].d < 1.6 ? 0 : 1 + (k % 2)] }));
+  if (isTown) { const [tx, ty] = pl.toW(0, -HALF * .45); items.push({ x: tx, y: ty, p: { w: 1.6 }, kind: 'temple', roof: roofs[0] }); }
+  if (t.pop >= GREAT) { const [px, py] = pl.toW(0, HALF * .55); items.push({ x: px, y: py, p: { w: 1.4 }, kind: 'palace', roof: roofs[0] }); }
+  items.sort((a, b) => a.y - b.y);
+  for (const it of items) building(x, it.kind, it.x, it.y, it.p, it.roof, dome, detail);
   x.restore();
-  return plots[Math.max(0, n - 1)].r * 1.2;
+  let reach = 8; for (const sl of live) reach = Math.max(reach, Math.hypot(sl.x - h.x, sl.y - h.y));
+  return reach;
 }
 function drawTown(x, t) {
   const h = hexes[t.i];
