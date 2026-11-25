@@ -131,6 +131,7 @@
       <option value="0.5">½×</option><option value="1" selected>1×</option><option value="2">2×</option>
       <option value="4">4×</option><option value="8">8×</option><option value="16">16×</option>
     </select>
+    <button id="faithmode" aria-pressed="false">Faiths</button>
     <button id="share">Share world</button>
     <button id="newworld">New world</button>
     <span id="confirmnew" class="confirm" hidden>
@@ -841,6 +842,8 @@ function computeLabels(own, infoOf) {
 // ---------- factions ----------
 function styleOf(f, size = f.size) {
   if (f.kind === 'horde') return 'Horde';
+  if (f.gov === 'republic') return size >= 18 ? 'Republic' : 'Free City';
+  if (f.gov === 'theocracy') return size >= 18 ? 'Holy Realm' : 'Holy See';
   if (size >= 45) return 'Empire';
   if (size >= 18) return 'Kingdom';
   if (size >= 7) return f.kind === 'rebel' ? 'Free State' : 'Principality';
@@ -852,12 +855,18 @@ const fn = f => `<a class="fn" data-f="${f.id}" style="color:${dark(f)}">${f.nam
 function rulerName(r) {
   return `${r.title} ${r.given}${r.num > 1 ? ' ' + (ROMAN[r.num] || r.num) : ''}${r.epithet ? ' ' + r.epithet : ''}`;
 }
+function govTitle(f, fem) {
+  if (f.gov === 'republic') return 'Doge';
+  if (f.gov === 'theocracy') return fem ? 'High Priestess' : 'High Priest';
+  return f.kind === 'horde' ? 'Khan' : fem ? 'Queen' : 'King';
+}
 function newRuler(f, age) {
   const fem = f.kind !== 'horde' && R() < .4;
   const given = f.kind === 'horde' ? pick(KHANS) : pick(fem ? FEMALE : MALE);
   f.nameCounts[given] = (f.nameCounts[given] || 0) + 1;
-  return { given, fem, num: f.nameCounts[given], title: f.kind === 'horde' ? 'Khan' : fem ? 'Queen' : 'King',
-    age: age ?? rnd(18, 45), ability: Math.pow(R(), .8), start: year(), gained: 0, lost: 0, epithet: null, plague: false };
+  return { given, fem, num: f.gov === 'republic' ? 1 : f.nameCounts[given], title: govTitle(f, fem), house: f.house,
+    age: age ?? rnd(18, 45), ability: Math.pow(R(), .8), start: year(), gained: 0, lost: 0, epithet: null, plague: false,
+    term: f.gov === 'republic' ? Math.round(rnd(8, 12)) : 0 };
 }
 function newFaction(kind, capital, parent) {
   // pick a pigment nobody nearby is wearing, so neighbouring washes stay distinct
@@ -875,6 +884,11 @@ function newFaction(kind, capital, parent) {
   if (kind === 'horde') { f.traits.aggr = .8 + R() * .2; f.traits.ambit = .8 + R() * .2; f.horde = 2.2; }
   if (kind === 'rebel') { f.traits.aggr = .4 + R() * .5; }
   if (parent) f.fervor = 1.2;
+  // kind of rule, ruling house, faith and treasury
+  f.gov = kind === 'horde' ? 'horde' : parent && parent.gov === 'republic' && kind === 'rebel' ? 'republic' : 'kingdom';
+  f.house = f.gov === 'kingdom' || f.gov === 'horde' ? newHouse(kind === 'horde' ? 'clan' : null) : null;
+  f.faith = kind === 'horde' ? steppeFaith() : faithOf[capital] >= 0 ? faithOf[capital] : parent ? parent.faith : faiths.length ? 0 : newFaith();
+  f.gold = parent ? 0 : 5; f.peaceSince = year(); f.golden = 0; f.bankrupt = 0; f.revolYear = -99;
   f.ruler = newRuler(f, kind === 'realm' ? undefined : rnd(25, 45));
   factions.push(f);
   return f;
@@ -940,6 +954,163 @@ function ally(A, B) {
 // ---------- the monthly tick ----------
 function aliveList() { return factions.filter(f => f.alive); }
 
+// ---------- kingdoms: houses, faiths, kinds of rule, wealth ----------
+let houses, faiths, faithOf, marriages, faithMode = false;
+const TINCT = ['#9b2c24', '#2c4a8b', '#2f6b3a', '#5a2d6b', '#2a2420'], METAL = ['#d9b44a', '#ece6d4'];
+const CHARGES = ['chevron', 'bend', 'cross', 'saltire', 'pale', 'fess', 'chief', 'roundel', 'star'];
+const HOUSE_END = ['ett', 'ard', 'in', 'ow', 'ys', 'arr', 'ane', 'oc', 'ell', 'ric', 'mont', 'by'];
+function newHouse(kind) {
+  let name = '';
+  for (let k = 0; k < 30; k++) { name = pick(SYL_A) + pick(HOUSE_END); if (!houses.some(h => h.name === name)) break; }
+  houses.push({ id: houses.length, name, field: pick(TINCT), metal: pick(METAL), charge: pick(CHARGES), founded: year(), clan: kind === 'clan' });
+  return houses.length - 1;
+}
+const DEITIES = ['Aurum', 'Vael', 'Ithra', 'Orvan', 'the Lantern', 'the Mother', 'the Twin Moons', 'the Ash Tree', 'the Deep', 'Sarn', 'the Hearth'];
+const CREEDS = ['Sunward', 'Ashen', 'Silver', 'Twelvefold', 'Lantern', 'Hollow', 'Thorn'];
+const FAITH_COLORS = ['#d1a94c', '#5f86b0', '#b5644f', '#6f9e62', '#9473ab', '#c98a52', '#4f9e95', '#b0657f', '#8a8f44'];
+function newFaith(parent, forced) {
+  const used = new Set(faiths.filter(f => f.alive).map(f => f.color));
+  let name = forced;
+  // every faith gets its own god or creed, never one another faith already claims
+  const taken = w => faiths.some(f => f.name.endsWith(w) || f.name.includes(`the ${w} Creed`));
+  for (let k = 0; k < 40 && !forced; k++) {
+    const r = R(), d = pick(DEITIES), c = pick(CREEDS);
+    if (r < .35 && !taken(d)) { name = `the Faith of ${d}`; break; }
+    if (r < .65 && r >= .35 && !taken(c)) { name = `the ${c} Creed`; break; }
+    if (r < .85 && r >= .65 && !taken(d)) { name = `the Way of ${d}`; break; }
+    if (r >= .85) { name = `the Church of ${placeName(false)}`; break; }
+  }
+  if (!name) name = `the Church of ${placeName(false)}`;
+  faiths.push({ id: faiths.length, name, color: FAITH_COLORS.find(c => !used.has(c)) || pick(FAITH_COLORS), founded: year(), parent: parent ?? -1, alive: true });
+  return faiths.length - 1;
+}
+function steppeFaith() {
+  const s = faiths.find(f => f.alive && f.name === 'the Faith of the Sky Father');
+  return s ? s.id : newFaith(-1, 'the Faith of the Sky Father');
+}
+function marry(A, B) {
+  marriages.push({ a: A.id, b: B.id, year: year() });
+  if (marriages.length > 80) marriages.shift();
+  event(`A royal wedding binds House ${houses[A.house].name} of ${fn(A)} to House ${houses[B.house].name} of ${fn(B)}.`, [A, B], lvl(sig(A, 1.5) && sig(B, 1.5)));
+  if (!A.allies.has(B.id) && R() < .4) ally(A, B);
+}
+// faiths spread province by province; rulers follow their people; great faiths split
+function faithYear() {
+  for (const h of land) {
+    const o = owner[h.i], cur = faithOf[h.i];
+    if (o >= 0) { const f = factions[o]; if (cur !== f.faith && R() < (f.gov === 'theocracy' ? .06 : .03)) { faithOf[h.i] = f.faith; continue; } }
+    if (R() < .008) { const n = h.nb[Math.floor(R() * h.nb.length)]; if (hexes[n].land && faithOf[n] >= 0 && faithOf[n] !== cur) faithOf[h.i] = faithOf[n]; }
+  }
+  const total = new Map(), byRealm = new Map();
+  for (const h of land) {
+    const fa = faithOf[h.i]; total.set(fa, (total.get(fa) || 0) + 1);
+    const o = owner[h.i]; if (o < 0) continue;
+    let m = byRealm.get(o); if (!m) byRealm.set(o, m = new Map()); m.set(fa, (m.get(fa) || 0) + 1);
+  }
+  for (const f of aliveList()) {
+    const m = byRealm.get(f.id); if (!m || f.size < 4 || f.kind === 'horde') continue;
+    let top = f.faith, tc = 0; for (const [fa, c] of m) if (c > tc) { tc = c; top = fa; }
+    if (top !== f.faith && tc / f.size > .6 && R() < .03) {
+      f.faith = top;
+      event(`${rulerName(f.ruler)} of ${fn(f)} embraces ${faiths[top].name}, the faith of the realm's people.`, [f], lvl(sig(f)));
+    }
+  }
+  for (const fa of faiths) {
+    if (!fa.alive) continue;
+    const n = total.get(fa.id) || 0;
+    if (!n && !aliveList().some(f => f.faith === fa.id)) { fa.alive = false; continue; }
+    if (n / landCount > .4 && year() - fa.founded > 60 && R() < .05) schism(fa);
+  }
+}
+function schism(fa) {
+  const cands = aliveList().filter(f => f.faith === fa.id && f.size >= 8).sort((a, b) => b.size - a.size);
+  const A = cands[1] || cands[0]; if (!A) return;          // usually the faith's second power breaks away
+  const nf = newFaith(fa.id); A.faith = nf; fa.founded = year();
+  for (const h of land) if (owner[h.i] === A.id && faithOf[h.i] === fa.id && R() < .7) faithOf[h.i] = nf;
+  event(`The Great Schism: ${fn(A)} breaks with ${fa.name} and proclaims ${faiths[nf].name}.`, [A], 'big');
+  moment(75, hexes[A.capital], 'The Great Schism', `${A.name} breaks with ${fa.name}`);
+  dirty = true;
+}
+// crowns fall to councils, priests seize power, strongmen crown themselves
+function ruleYear() {
+  for (const f of aliveList()) {
+    if (f.kind === 'horde' || f.size < 6 || year() - f.revolYear < 40) continue;
+    const towns_ = towns.filter(t => !t.ruined && t.pop >= TOWN && owner[t.i] === f.id).length;
+    const troubled = f.bankrupt > tick || f.lostCap > tick || f.ruler.ability < .25;
+    if (f.gov === 'kingdom' && towns_ >= 3 && troubled && R() < .1) setGov(f, 'republic');
+    else if (f.gov === 'kingdom' && (f.plague > 0 || f.lostCap > tick) && R() < .025) setGov(f, 'theocracy');
+    else if (f.gov === 'republic' && ((f.nWars > 0 && f.lostCap > tick) || R() < .008)) setGov(f, 'kingdom');
+    else if (f.gov === 'theocracy' && R() < .01) setGov(f, 'kingdom');
+  }
+}
+function setGov(f, gov) {
+  const from = f.gov, old = f.ruler;
+  old.end = year(); if (!old.epithet) old.epithet = epithetFor(old); f.rulers.push(old);
+  f.gov = gov; f.revolYear = year();
+  f.house = gov === 'kingdom' ? newHouse() : null;
+  f.ruler = newRuler(f, rnd(30, 50));
+  const big = sig(f), h = hexes[f.capital];
+  if (gov === 'republic') {
+    event(`Revolution in ${fn(f)}: the crown is cast down and the Republic of ${f.name} proclaimed. The councils elect ${rulerName(f.ruler)}.`, [f], lvl(big, 'big'));
+    if (big) { note(h, `Here the crown of ${f.name} fell`); moment(65, h, 'Revolution', `the Republic of ${f.name} is proclaimed`); }
+  } else if (gov === 'theocracy') {
+    event(`The priests of ${faiths[f.faith].name} take power in ${fn(f)}; ${rulerName(f.ruler)} rules in the name of the faith.`, [f], lvl(big, 'big'));
+    if (big) moment(60, h, 'The Priests Take Power', `${f.name} becomes a holy realm`);
+  } else if (from === 'republic') {
+    event(`A strongman seizes ${fn(f)} and is crowned ${rulerName(f.ruler)}, first of House ${houses[f.house].name}.`, [f], lvl(big, 'big'));
+    if (big) moment(55, h, 'A Crown Seized', `the Republic of ${f.name} is no more`);
+  } else {
+    event(`The lords of ${fn(f)} cast off the priests and crown ${rulerName(f.ruler)} of House ${houses[f.house].name}.`, [f], lvl(big));
+  }
+  dirty = true;
+}
+// towns and roads fill the treasury; armies empty it
+function wealthYear() {
+  const townPop = new Map(), roadN = new Map();
+  for (const t of towns) { if (t.ruined) continue; const o = owner[t.i]; if (o >= 0) townPop.set(o, (townPop.get(o) || 0) + t.pop); }
+  for (const r of roads.values()) { if (!r.used) continue; const o = owner[r.a]; if (o >= 0) roadN.set(o, (roadN.get(o) || 0) + 1); }
+  for (const f of aliveList()) {
+    const tw = townPop.get(f.id) || 0;
+    let income = tw * 1.2 + (roadN.get(f.id) || 0) * .4 + f.size * .05;
+    if (f.gov === 'republic') income *= 1.6;
+    if (f.golden > tick) income *= 1.3;
+    if (f.plague > 0) income *= .7;
+    const upkeep = f.kind === 'horde' ? 0 : Math.pow(f.size, 1.15) * .05 + (f.nWars ? f.size * .04 * Math.min(f.nWars, 3) : 0);
+    f.gold = Math.min(f.size * 6 + 20, f.gold + income - upkeep);
+    if (f.nWars) f.peaceSince = year();
+    if (f.gold < -(f.size * .8 + 8) && f.bankrupt <= tick) {
+      f.bankrupt = tick + 36; f.gold = 0;
+      event(`${fn(f)} cannot pay its soldiers. The treasury is empty, and the unpaid companies desert.`, [f], lvl(sig(f, 1.5)));
+      if (sig(f, 1.5)) moment(45, hexes[f.capital], 'Bankrupt', `${f.name} cannot pay its armies`);
+    }
+    const nTowns = towns.filter(t => !t.ruined && t.pop >= TOWN && owner[t.i] === f.id).length;
+    if (f.golden <= tick && f.nWars === 0 && year() - f.peaceSince >= 6 && f.gold > f.size * 1.5 && nTowns >= 2 && R() < .4) {
+      f.golden = tick + 12 * 20;
+      event(`A golden age dawns in ${fn(f)}: full granaries, busy roads and new towers in every city.`, [f], lvl(sig(f)));
+      if (sig(f, 1.5)) moment(45, hexes[f.capital], 'A Golden Age', `in ${f.name}`);
+    }
+  }
+}
+// heraldry for the realm card
+function armsSVG(h, w = 22) {
+  if (!h) return '';
+  const m = h.metal, id = `arms${h.id}`;
+  const charge = {
+    chevron: `<path d="M2 21 L12 11 L22 21 L22 16 L12 6 L2 16Z" fill="${m}"/>`,
+    bend: `<path d="M2 2 L8 2 L22 18 L22 25Z" fill="${m}"/>`,
+    cross: `<rect x="10" y="2" width="4" height="26" fill="${m}"/><rect x="2" y="10" width="20" height="4" fill="${m}"/>`,
+    saltire: `<path d="M3 3 L21 25 M21 3 L3 25" stroke="${m}" stroke-width="4"/>`,
+    pale: `<rect x="9" y="2" width="6" height="26" fill="${m}"/>`,
+    fess: `<rect x="2" y="10" width="20" height="6" fill="${m}"/>`,
+    chief: `<rect x="2" y="2" width="20" height="8" fill="${m}"/>`,
+    roundel: `<circle cx="12" cy="13" r="5" fill="${m}"/>`,
+    star: `<path d="M12 6 L14 11 L19.5 11 L15 14.5 L17 20 L12 16.5 L7 20 L9 14.5 L4.5 11 L10 11Z" fill="${m}"/>`,
+  }[h.charge];
+  return `<svg width="${w}" height="${Math.round(w * 1.15)}" viewBox="0 0 24 28" style="vertical-align:-6px" aria-hidden="true"><clipPath id="${id}"><path d="M2 2 H22 V14 C22 21 17 25 12 27 C7 25 2 21 2 14 Z"/></clipPath><g clip-path="url(#${id})"><rect width="24" height="28" fill="${h.field}"/>${charge}</g><path d="M2 2 H22 V14 C22 21 17 25 12 27 C7 25 2 21 2 14 Z" fill="none" stroke="#3a2b1c" stroke-width="1.2"/></svg>`;
+}
+const govWord = f => ({ kingdom: f.size >= 45 ? 'empire' : 'monarchy', republic: 'merchant republic', theocracy: 'theocracy', horde: 'horde' }[f.gov] || 'monarchy');
+const treasuryWord = f => f.gold > f.size * 3 ? 'overflowing' : f.gold > f.size ? 'comfortable' : f.gold > 0 ? 'lean' : 'in debt';
+
 // ---------- the map remembers: towns, roads, battlefields ----------
 const TOWN = 1, CITY = 2.5;                       // population thresholds: village < town < city
 const townAt = i => towns.find(t => t.i === i && !t.ruined);
@@ -976,7 +1147,7 @@ function settlements() {
     if (!f) { t.pop *= .97; continue; }
     if (f.plague > 0) t.pop *= .95;
     else if (f.famine > 0) t.pop *= .98;
-    else t.pop = Math.min(4, t.pop + h.food * (f.nWars > 0 ? .003 : .011));
+    else t.pop = Math.min(4, t.pop + h.food * (f.nWars > 0 ? .003 : .011) * (f.golden > tick ? 1.8 : 1));
     const now = kindOf(t);
     if (now !== was) {
       dirty = true;
@@ -1065,6 +1236,10 @@ function computeStats() {
     // big realms are slow, corrupt and stretched thin: power falls off sharply with share of the map
     const share = f.size / landCount, sprawl = 1 / (1 + (share * 2.3) ** 2);
     f.power = Math.pow(f.food, .8) * sprawl * (.7 + .6 * f.ruler.ability) * (f.plague > 0 ? .55 : 1) * (f.famine > 0 ? .7 : 1) * (1 + f.horde + f.fervor);
+    // gold hires mercenaries; an empty treasury means unpaid, deserting soldiers
+    // (a great empire's gold buys less: its armies are spread thin across too many frontiers)
+    const gb = clamp(f.gold / (f.size * 3 + 10), -.3, .25);
+    f.power *= (1 + (gb > 0 ? gb * (1 - clamp(share * 2.5, 0, .9)) : gb)) * (f.bankrupt > tick ? .7 : 1);
     if (f.size > f.peak) { f.peak = f.size; f.peakYear = year(); }
   }
 }
@@ -1122,11 +1297,13 @@ function revolts() {
   const over = new Map(al.map(f => {
     const share = f.size / landCount;
     return [f.id, share * 1.5 + (share > .28 ? .4 : 0) + (f.plague > 0 ? .25 : 0) + (f.lostCap > tick ? .25 : 0)
-      + (f.nWars > 1 ? .1 : 0) - f.ruler.ability * .35 - f.traits.loyal * .1];
+      + (f.nWars > 1 ? .1 : 0) + (f.bankrupt > tick ? .2 : 0) - f.ruler.ability * .35 - f.traits.loyal * .1];
   }));
   for (const h of land) {
     const o = owner[h.i]; if (o < 0) continue;
-    const d = distArr[h.i], u = (d < 0 ? 1.4 : d * .05) + over.get(o);
+    // provinces that keep another faith are restless, the more so under priests
+    const f = factions[o], heretic = faithOf[h.i] !== f.faith ? (f.gov === 'theocracy' ? .28 : .18) : 0;
+    const d = distArr[h.i], u = (d < 0 ? 1.4 : d * .05) + over.get(o) + heretic;
     const m = max.get(o); if (!m || u > m.u) max.set(o, { u, h });
   }
   for (const f of al) {
@@ -1149,7 +1326,7 @@ function revolt(f, seedTile, maxU, over) {
   const r = newFaction('rebel', seedTile.i, f);
   for (const i of region) owner[i] = r.id;
   r.size = region.length; dirty = true;
-  event(`The far provinces of ${fn(f)} rise in revolt. ${rulerName(r.ruler)} is acclaimed lord of ${fn(r)}.`, [f, r], lvl(sig(f, 1.5) && region.length >= 8));
+  event(`The far provinces of ${fn(f)}${r.faith !== f.faith ? `, faithful to ${faiths[r.faith].name},` : ''} rise in revolt. ${rulerName(r.ruler)} is acclaimed lord of ${fn(r)}.`, [f, r], lvl(sig(f, 1.5) && region.length >= 8));
   if (sig(f, 1.5) && region.length >= 8) note(seedTile, `Here ${r.name} rose against ${f.name}`);
   declareWar(r, f, `the Revolt of ${r.name}`, true);
 }
@@ -1159,6 +1336,7 @@ function rulers() {
     const r = f.ruler; r.age += 1 / 12;
     if (f.plague > 0) r.plague = true;
     if (R() < .0018 + Math.max(0, r.age - 42) ** 2 * .00004 + (f.plague > 0 ? .002 : 0)) succession(f);
+    else if (f.gov === 'republic' && year() - r.start >= r.term && tick % 12 === 0) election(f);
   }
 }
 function epithetFor(r) {
@@ -1171,13 +1349,44 @@ function epithetFor(r) {
   if (r.ability > .82) return 'the Wise';
   return pick(['the Just', 'the Quiet', 'the Pious', 'the Fat', 'the Grey', 'the Fair', 'the Stern', 'the Kind', 'the Cruel', 'the Fowler']);
 }
+function election(f) {
+  const old = f.ruler; old.end = year(); f.rulers.push(old);
+  f.ruler = newRuler(f, rnd(35, 60));
+  event(`The councils of ${fn(f)} elect ${rulerName(f.ruler)} to succeed ${rulerName(old)}.`, [f], 'minor');
+  // a disputed election can split a great republic just as a disputed succession splits a kingdom
+  if (f.size >= 10 && R() < .04 + (f.size / landCount) * .9) civilWar(f);
+}
 function succession(f) {
   const old = f.ruler, reign = year() - old.start;
   old.end = year(); old.epithet = epithetFor(old); f.rulers.push(old);
+  if (f.gov === 'republic') { f.ruler = newRuler(f, rnd(35, 60)); event(`${rulerName(old)} of ${fn(f)} dies in office; the councils elect ${rulerName(f.ruler)}.`, [f], 'minor'); return; }
+  // sometimes a royal line simply ends
+  if (f.gov === 'kingdom' && f.size >= 4 && R() < .08 + (old.age > 60 ? .05 : 0) && lineFails(f)) return;
   const heir = newRuler(f, rnd(14, 40)); f.ruler = heir;
   event(`${rulerName(old)} of ${fn(f)} dies after ${reign < 1 ? 'mere months' : reign + ' years'} on the throne; ${rulerName(heir)} succeeds.`, [f], lvl(sig(f, 1.5)));
   const share = f.size / landCount;
-  if (f.size >= 10 && R() < .05 + (1 - heir.ability) * .22 + share * .9) civilWar(f);
+  if (f.size >= 10 && R() < (.05 + (1 - heir.ability) * .22 + share * .9) * (f.gov === 'theocracy' ? .8 : 1)) civilWar(f);
+}
+// a dead line passes the crown by marriage, or starts a war over the claim
+function lineFails(f) {
+  const kin = marriages.filter(m => (m.a === f.id || m.b === f.id) && year() - m.year < 80)
+    .map(m => factions[m.a === f.id ? m.b : m.a]).filter(A => A.alive && A.gov === 'kingdom' && !warBetween(A, f)).sort((a, b) => b.size - a.size);
+  const A = kin[0], gone = houses[f.house];
+  if (A && (A.size + f.size) / landCount < .33 && R() < .65) {
+    const big = sig(f, .5) || sig(A);
+    event(`House ${gone.name} dies out in ${fn(f)}. By right of marriage, ${rulerName(A.ruler)} of ${fn(A)} inherits the crown: two realms, one ruler.`, [f, A], lvl(big, 'big'));
+    if (big) { note(hexes[f.capital], `${f.name} passed to ${A.name} by marriage`); moment(85, hexes[f.capital], 'Two Crowns, One King', `${A.name} inherits ${f.name}`); }
+    for (const h of land) if (owner[h.i] === f.id) owner[h.i] = A.id;
+    f.absorbedBy = A.id; dirty = true;
+    return true;
+  }
+  f.house = newHouse(); f.ruler = newRuler(f, rnd(20, 45));
+  event(`House ${gone.name} dies out in ${fn(f)}; the lords raise ${rulerName(f.ruler)} of House ${houses[f.house].name}.`, [f], lvl(sig(f)));
+  if (A && R() < .7) {
+    const w = declareWar(A, f, `the War of the ${f.name} Succession`, true);
+    if (w) event(`${fn(A)} claims the throne of ${fn(f)} by marriage: ${w.name} begins.`, [A, f], lvl(sig(A, .5) && sig(f, .5), 'big'));
+  }
+  return true;
 }
 function civilWar(f) {
   let seat = -1, sd = -1;
@@ -1190,7 +1399,7 @@ function civilWar(f) {
   for (const h of land) if (owner[h.i] === f.id && h.i !== f.capital && dB[h.i] >= 0 && (distArr[h.i] < 0 || dB[h.i] < distArr[h.i])) { owner[h.i] = p.id; n++; }
   p.size = n; dirty = true;
   const name = `the War of the ${f.name} Succession`;
-  event(`The succession in ${fn(f)} is disputed. ${rulerName(p.ruler)} seizes the western halls and proclaims ${fn(p)}: ${name} begins.`
+  event(`The ${f.gov === 'republic' ? 'election' : 'succession'} in ${fn(f)} is disputed. ${rulerName(p.ruler)} seizes the western halls and proclaims ${fn(p)}: ${name} begins.`
     .replace('western', pick(['western', 'eastern', 'northern', 'southern', 'outer'])), [f, p], lvl(sig(f), 'big'));
   if (sig(f)) { note(hexes[seat], `Here a pretender raised ${p.name}`); if (sig(f, 1.5)) moment(55, hexes[seat], `A Crown Divided`, `the War of the ${f.name} Succession`); }
   declareWar(p, f, name, true);
@@ -1217,7 +1426,13 @@ function diplomacy() {
       if ((X.truce.get(Y.id) || 0) > tick) continue;
       const ratio = X.power / Math.max(.1, Y.power), share = Y.size / landCount;
       let p = .005 + X.traits.aggr * .06 * clamp(ratio - .9, 0, 1.5) + (share > .28 ? .12 : 0) + (X.horde > .3 ? .3 : 0);
-      if (R() < p) { declareWar(X, Y); break; }
+      // faith divides, priests preach holy war, merchants prefer trade, and a rich neighbour is a tempting one
+      const holy = X.faith !== Y.faith;
+      p *= holy ? 1.4 : .85;
+      if (holy && X.gov === 'theocracy') p += .04;
+      if (X.gov === 'republic') p *= .5;
+      p *= 1 + clamp(Y.gold / (Math.abs(X.gold) + 10), 0, 1) * .3;
+      if (R() < p) { declareWar(X, Y, holy && (X.gov === 'theocracy' || R() < .3) ? `the Holy War against ${Y.name}` : null); break; }
     }
   }
   // coalitions against whoever is biggest
@@ -1231,7 +1446,9 @@ function diplomacy() {
   }
   for (const A of al) for (const [bid] of A.fronts) {
     const B = factions[bid];
-    if (B.id > A.id && !A.allies.has(B.id) && !warBetween(A, B) && A.traits.loyal > .55 && B.traits.loyal > .55 && R() < .02) ally(A, B);
+    if (B.id > A.id && !A.allies.has(B.id) && !warBetween(A, B) && ((A.traits.loyal > .55 && B.traits.loyal > .55) || A.faith === B.faith) && R() < .02) ally(A, B);
+    // royal marriages between neighbouring crowns
+    if (B.id > A.id && A.gov === 'kingdom' && B.gov === 'kingdom' && !warBetween(A, B) && R() < (A.allies.has(B.id) ? .06 : .02)) marry(A, B);
   }
   // peace
   for (const w of wars.slice()) {
@@ -1345,7 +1562,7 @@ function simTick() {
   if (tick % 3 === 0) revolts();
   rulers();
   for (const f of aliveList()) { if (f.plague > 0) f.plague--; if (f.famine > 0) f.famine--; }
-  if (tick % 12 === 0) { diplomacy(); absorptions(); disasters(); spawnTribes(); settlements(); eraCheck(); }
+  if (tick % 12 === 0) { diplomacy(); absorptions(); disasters(); spawnTribes(); settlements(); faithYear(); ruleYear(); wealthYear(); eraCheck(); }
 }
 
 // ---------- new world ----------
@@ -1353,7 +1570,8 @@ function initWorld(s) {
   genWorld(s);
   owner = new Int16Array(hexes.length).fill(-1);
   distArr = new Int16Array(hexes.length).fill(-1);
-  towns = []; roads = new Map(); battlefields = [];
+  towns = []; roads = new Map(); battlefields = []; houses = []; faiths = []; marriages = [];
+  faithOf = new Int16Array(hexes.length).fill(-1); faithMode = false; syncFaithButton();
   factions = []; wars = []; chron = []; eras = []; ruins = []; notes = []; tick = 0; collapse = null; lastWarYear = 0;
   moments = []; momentNow = null; founding = false; follow = null; viewEra = null; labels = []; snapLabels = []; puffs = []; fires = []; armies = new Map();
   document.getElementById('chron').innerHTML = '';
@@ -1386,6 +1604,10 @@ function newWorld(s) {
     starts.push(h);
   }
   event(`Here begins the chronicle of the lands of ${worldName}.`, [], 'era');
+  // three faiths divide the land at the start of history
+  const seeds = [];
+  for (let k = 0; k < 300 && seeds.length < 3; k++) { const h = pick(land); if (seeds.every(q => Math.hypot(q.h.x - h.x, q.h.y - h.y) > 300)) seeds.push({ h, id: newFaith() }); }
+  for (const h of land) faithOf[h.i] = seeds.reduce((a, q) => Math.hypot(q.h.x - h.x, q.h.y - h.y) < Math.hypot(a.h.x - h.x, a.h.y - h.y) ? q : a).id;
   for (const h of starts) {
     const f = newFaction('realm', h.i);
     owner[h.i] = f.id; for (const n of h.nb) if (hexes[n].land) owner[n] = f.id;
@@ -1403,13 +1625,13 @@ function newWorld(s) {
 // ---------- saving & resuming ----------
 // The world lives in this browser's storage. Terrain is rebuilt from the seed; everything
 // that happened since is saved, and time that passed while the page was closed is replayed.
-const SAVE_KEY = 'ledger-of-crowns-v2', PREV_KEY = 'ledger-of-crowns-v2-set-aside', MAX_CATCHUP_YEARS = 200;
+const SAVE_KEY = 'ledger-of-crowns-v3', PREV_KEY = 'ledger-of-crowns-v3-set-aside', MAX_CATCHUP_YEARS = 200;
 const b64 = a => { const u = new Uint8Array(a.buffer, a.byteOffset, a.byteLength); let str = ''; for (let i = 0; i < u.length; i += 0x8000) str += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(str); };
 const unb64 = str => { const bin = atob(str), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return new Int16Array(u.buffer); };
 function packWorld(maxSnaps) {
   const now = year();
   return {
-    v: 2, seed, rs, tick, savedAt: Date.now(), paused, speed, follow, worldName, founding,
+    v: 3, seed, rs, tick, savedAt: Date.now(), paused, speed, follow, worldName, founding,
     owner: b64(owner), caps: land.filter(h => tick - h.lastCap < 36).map(h => [h.i, h.lastCap]),
     factions: factions.map(f => {
       const { fronts, wildFront, allies, truce, log, rulers, ...rest } = f;
@@ -1421,7 +1643,7 @@ function packWorld(maxSnaps) {
     chron: chron.slice(-400), ruins, notes, collapse, lastWarYear, towns, roads: [...roads], battlefields,
     eras: eras.map((e, k) => ({ name: e.name, kind: e.kind, start: e.start,
       snap: e.snap && k >= eras.length - maxSnaps ? { owner: b64(e.snap.owner), info: [...e.snap.info] } : null })),
-    usedNames: [...usedNames], usedWars: [...usedWars],
+    usedNames: [...usedNames], usedWars: [...usedWars], houses, faiths, marriages, faithOf: b64(faithOf),
   };
 }
 function saveWorld() {
@@ -1431,7 +1653,7 @@ function saveWorld() {
   }
 }
 function loadSave() {
-  try { const raw = localStorage.getItem(SAVE_KEY); const sv = raw && JSON.parse(raw); return sv && sv.v === 2 ? sv : null; } catch (e) { return null; }
+  try { const raw = localStorage.getItem(SAVE_KEY); const sv = raw && JSON.parse(raw); return sv && sv.v === 3 ? sv : null; } catch (e) { return null; }
 }
 function restoreWorld(sv) {
   initWorld(sv.seed);
@@ -1443,6 +1665,7 @@ function restoreWorld(sv) {
   wars = sv.wars; chron = sv.chron; ruins = sv.ruins; notes = (sv.notes || []).map(({ q, box, ...n }) => n); collapse = sv.collapse; lastWarYear = sv.lastWarYear;
   eras = sv.eras.map(e => ({ ...e, snap: e.snap ? { owner: unb64(e.snap.owner), info: new Map(e.snap.info) } : null }));
   usedNames = new Set(sv.usedNames); usedWars = new Map(sv.usedWars);
+  houses = sv.houses; faiths = sv.faiths; marriages = sv.marriages; faithOf.set(unb64(sv.faithOf));
   for (const e of chron.slice(-250)) pushChronDom(e);
   speed = sv.speed || 1; document.getElementById('speed').value = String(speed);
   paused = !!sv.paused; document.getElementById('pause').textContent = paused ? 'Resume' : 'Pause';
@@ -1536,7 +1759,7 @@ function drawOverlay(x, own, labs, live, fields, borders) {
   x.setLineDash([.1, 3]); x.lineWidth = 1; x.globalAlpha = .45; strokeLines(x, borders.wild);
   x.setLineDash([]); x.globalAlpha = 1;
   // the followed realm gets a firm outline
-  const fol = follow != null && fields.has(follow) && (!live || factions[follow]?.alive) ? follow : null;
+  const fol = !faithMode && follow != null && fields.has(follow) && (!live || factions[follow]?.alive) ? follow : null;
   if (fol != null) {
     const segs = realmContour(fields, fol), keep = [];
     for (let k = 0; k < segs.length; k += 4) if (otherAt(own, (segs[k] + segs[k + 2]) / 2, (segs[k + 1] + segs[k + 3]) / 2, fol) !== -2) keep.push(segs[k], segs[k + 1], segs[k + 2], segs[k + 3]);
@@ -1569,7 +1792,7 @@ function drawOverlay(x, own, labs, live, fields, borders) {
       const w = x.measureText(spaced(l.name)).width + 8;
       for (const c of l.cands) { const b = boxAt(c, size, w); if (!hit(b) && inFrame(b)) { done = { c, size, b }; break; } }
       if (done) break;
-      if (k === .72 && l.n >= 30) done = { c: l.cands[0], size, b: boxAt(l.cands[0], size, w) };   // a great realm is always named
+      if (k === .72 && l.n >= 30 && l.id >= 0) done = { c: l.cands[0], size, b: boxAt(l.cands[0], size, w) };   // a great realm is always named
     }
     if (done) { boxes.push(done.b); placed.push({ l, ...done }); }
   }
@@ -1732,6 +1955,14 @@ function drawAnim(x, now) {
       x.beginPath(); x.moveTo(fx - 2.5, h.y - 2); x.quadraticCurveTo(fx - 2.5, h.y - hgt * .6, fx, h.y - hgt); x.quadraticCurveTo(fx + 2.5, h.y - hgt * .6, fx + 2.5, h.y - 2); x.closePath(); x.fill();
     }
     x.restore();
+  }
+  // a golden age glows around its capital
+  for (const f of factions) {
+    if (!f.alive || f.golden <= tick) continue;
+    const c = hexes[f.capital], pulse = reduceMotion ? .8 : .7 + .3 * Math.sin(now / 900 + f.id);
+    const g = x.createRadialGradient(c.x, c.y, 2, c.x, c.y, 30);
+    g.addColorStop(0, `rgba(240,196,80,${.55 * pulse})`); g.addColorStop(1, 'rgba(240,196,80,0)');
+    x.fillStyle = g; x.beginPath(); x.arc(c.x, c.y, 30, 0, 7); x.fill();
   }
   // a sickly haze circles the capital of a plague-stricken realm
   x.fillStyle = 'rgba(92,116,48,.85)';
@@ -1969,7 +2200,7 @@ function draw() {
   if (ovDirty) {
     const o = ovC.getContext('2d');
     o.setTransform(1, 0, 0, 1, 0, 0); o.clearRect(0, 0, ovC.width, ovC.height); o.setTransform(OS, 0, 0, OS, 0, 0);
-    if (viewEra) drawOverlay(o, viewEra.snap.owner, snapLabels, false, snapFields, snapBorders); else drawOverlay(o, owner, labels, true, liveFields, liveBorders);
+    if (viewEra) drawOverlay(o, viewEra.snap.owner, snapLabels, false, snapFields, snapBorders); else if (faithMode) drawOverlay(o, faithView, labels, false, liveFields, liveBorders); else drawOverlay(o, owner, labels, true, liveFields, liveBorders);
     ovDirty = false;
   }
   ctx.drawImage(ovC, 0, 0, MW, MH);
@@ -2000,7 +2231,7 @@ function renderCard() {
   card.hidden = false; hint.hidden = true;
   const r = f.ruler, foes = wars.filter(w => w.a === f.id || w.b === f.id).map(w => fn(factions[w.a === f.id ? w.b : w.a]));
   const allies = [...f.allies].map(id => fn(factions[id]));
-  const past = f.rulers.slice(-6).reverse().map(p => `<li>${rulerName(p)} <span style="color:var(--muted)">(Y.${p.start}–${p.end})</span></li>`).join('');
+  const past = f.rulers.slice(-6).reverse().map(p => `<li>${rulerName(p)}${p.house != null && houses[p.house] ? ` <span style="color:var(--muted)">of House ${houses[p.house].name}</span>` : ''} <span style="color:var(--muted)">(Y.${p.start}–${p.end})</span></li>`).join('');
   const deeds = f.log.slice(-8).reverse().map(e => `<li><span style="color:var(--muted)">Y.${e.y}</span> ${e.text}</li>`).join('');
   const origin = f.parent >= 0 ? ` · broke from ${fn(factions[f.parent])}` : '';
   card.innerHTML = `<button class="x" title="Stop following" id="unfollow">×</button>
@@ -2009,6 +2240,10 @@ function renderCard() {
       <dt>Founded</dt><dd>Year ${f.founded}${origin}</dd>
       ${f.alive ? `<dt>Provinces</dt><dd>${f.size} <span style="color:var(--muted)">(peak ${f.peak} in Y.${f.peakYear})</span></dd>
       <dt>Ruler</dt><dd>${rulerName(r)}, ${Math.floor(r.age)}, ${abilityWord(r.ability)}</dd>
+      <dt>Rule</dt><dd>${govWord(f)}${f.house != null ? ` of ${armsSVG(houses[f.house])} House ${houses[f.house].name}` : ''}</dd>
+      <dt>Faith</dt><dd>${faiths[f.faith] ? faiths[f.faith].name : '—'}</dd>
+      <dt>Treasury</dt><dd>${treasuryWord(f)}${f.golden > tick ? ', <b>in a golden age</b>' : ''}${f.bankrupt > tick ? ', <b>bankrupt</b>' : ''}</dd>
+      ${(() => { const kin = marriages.filter(m => (m.a === f.id || m.b === f.id) && year() - m.year < 80).map(m => factions[m.a === f.id ? m.b : m.a]).filter(g => g.alive); return kin.length ? `<dt>Kin</dt><dd>${[...new Set(kin)].map(fn).join(', ')}</dd>` : ''; })()}
       <dt>Temper</dt><dd>${traitWords(f.traits)}</dd>
       <dt>Allies</dt><dd>${allies.join(', ') || '—'}</dd>
       <dt>At war</dt><dd>${foes.join(', ') || '—'}</dd>
@@ -2035,6 +2270,7 @@ function renderTimeline() {
   });
 }
 function showEra(e) {
+  if (e && faithMode) { faithMode = false; syncFaithButton(); dirty = true; lastWash = -1e9; }
   viewEra = e; ovDirty = true;
   const b = document.getElementById('banner');
   if (e) {
@@ -2047,6 +2283,9 @@ function showEra(e) {
 }
 document.getElementById('banner').onclick = () => showEra(null);
 document.getElementById('foundskip').onclick = () => endFounding();
+let faithView = null;
+function syncFaithButton() { const b = document.getElementById('faithmode'); b.textContent = faithMode ? 'Realms' : 'Faiths'; b.setAttribute('aria-pressed', String(faithMode)); }
+document.getElementById('faithmode').onclick = () => { if (viewEra) showEra(null); faithMode = !faithMode; syncFaithButton(); dirty = true; lastWash = -1e9; };
 document.getElementById('away').addEventListener('click', ev => { const a = ev.target.closest('a.fn'); if (a) { follow = +a.dataset.f; renderCard(); } });
 chronEl.addEventListener('click', ev => { const a = ev.target.closest('a.fn'); if (a) { follow = +a.dataset.f; renderCard(); } });
 document.getElementById('card').addEventListener('click', ev => { const a = ev.target.closest('a.fn'); if (a) { follow = +a.dataset.f; renderCard(); } });
@@ -2106,9 +2345,18 @@ function frame(now) {
     if (founding && year() > PRESIM_YEARS) endFounding();
   }
   if (dirty && now - lastWash > 350) {
-    liveFields = territoryFields(owner); liveBorders = borderLines(owner, liveFields);
-    renderWash(washC, owner, liveFields, id => factions[id].color);
-    labels = computeLabels(owner, liveInfo);
+    if (faithMode) {
+      // the faith map: the same washes and borders, drawn by belief instead of by crown
+      const fo = Int16Array.from(faithOf); for (const h of hexes) if (!h.land) fo[h.i] = -1;
+      faithView = fo; liveFields = territoryFields(fo); liveBorders = borderLines(fo, liveFields);
+      renderWash(washC, fo, liveFields, id => faiths[id].color);
+      labels = computeLabels(fo, id => faiths[id] && { id: -1 - id, name: faiths[id].name.replace(/^the /, ''), color: faiths[id].color, capital: -1, sub: '' })
+        .map(l => ({ ...l, ang: l.ang * .35, size: l.size * .8 }));   // long names: keep them level and modest
+    } else {
+      liveFields = territoryFields(owner); liveBorders = borderLines(owner, liveFields);
+      renderWash(washC, owner, liveFields, id => factions[id].color);
+      labels = computeLabels(owner, liveInfo);
+    }
     lastWash = now; dirty = false; ovDirty = true;
   }
   if (needDraw || ovDirty || (!reduceMotion && now - lastDraw > 33)) { draw(); needDraw = false; lastDraw = now; }

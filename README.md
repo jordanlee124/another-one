@@ -19,6 +19,12 @@ Open `index.html` in a browser. There is no build step and nothing to install. T
 
 **No two worlds share a shape.** Each seed picks a kind of world: a single continent, twin lands divided by a winding strait, a continent wrapped around an inland sea, or an archipelago. Mountains follow ridgelines, so they form ranges instead of blobs. Every sea, lake, mountain range, great forest and desert gets a name. Short dotted sea lanes link separate landmasses, so island realms can be reached and conquered. Ships sail the open water, and the occasional sea serpent lurks there.
 
+**Kingdoms have houses, faiths, governments and treasuries.**
+- *Dynasties:* every crown belongs to a named house with its own coat of arms. Neighbouring crowns marry. When a royal line dies out, a realm can pass by marriage to another kingdom, joining two crowns under one ruler, or the claim starts a succession war.
+- *Faiths:* faiths spread province by province. Provinces of another faith are restless and rebel along religious lines. Priests preach holy wars, rulers convert to the faith of their people, and a faith that grows too large splits in a Great Schism. The **Faiths** button redraws the map by belief.
+- *Kinds of rule:* kingdoms, merchant republics that elect a Doge every decade or so, and theocracies ruled by a High Priest. Revolutions topple crowns, priests seize power in hard times, and strongmen crown themselves.
+- *Wealth:* towns and roads fill the treasury, and armies empty it. Gold hires mercenaries. Long wars end in bankruptcy and deserting soldiers, and long peace in a golden age that glows around the capital.
+
 **Big events stop the clock.** When a great realm falls, a capital is sacked, a horde arrives or a new age begins, time slows to a crawl. The map darkens around the place, ink rings ripple out from it, and a title banner such as "The Fall of Asharene" writes itself across the map. Only one plays at a time, and the most important event wins.
 
 **The map remembers.** Villages are founded in fertile land at peace, grow into towns and then walled cities, and are put to the torch when their province falls. Roads join each realm's towns to its capital and cross borders only between allies. They are cut where fighting is fresh, and an old road fades slowly after it falls out of use. The bloodiest ground of each great war is marked with crossed swords and the battle's name, and stays on the map for a century and a half.
