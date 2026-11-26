@@ -550,17 +550,28 @@ function otherAt(own, x, y, f) {
   return best;
 }
 function realmContour(fields, id) { const f = fields.get(id); return f ? contourOf(f.a, .5, f.i0, f.i1, f.j0, f.j1) : []; }
-function borderLines(own, fields) {
-  const between = [], wild = [];
+const BORDER_TILE = 64;
+function borderLines(own, fields, bloc = null) {
+  const between = [], wild = [], inner = [];
   for (const [id] of fields) {
     const segs = realmContour(fields, id);
     for (let k = 0; k < segs.length; k += 4) {
       const o = otherAt(own, (segs[k] + segs[k + 2]) / 2, (segs[k + 1] + segs[k + 3]) / 2, id);
       if (o === -2 || (o >= 0 && o < id)) continue;          // coast, or drawn from the other side
-      (o === -1 ? wild : between).push(segs[k], segs[k + 1], segs[k + 2], segs[k + 3]);
+      (o === -1 ? wild : bloc && bloc(id, o) ? inner : between).push(segs[k], segs[k + 1], segs[k + 2], segs[k + 3]);
     }
   }
-  return { between: chain(between), wild: chain(wild) };
+  // borders are joined into lines only within fixed tiles, so where their dashes fall depends only on the
+  // border inside that tile, never on a change somewhere else (which a partial redraw would not repaint)
+  const tiled = segs => {
+    const by = new Map();
+    for (let k = 0; k < segs.length; k += 4) {
+      const key = Math.floor((segs[k] + segs[k + 2]) / 2 / BORDER_TILE) + ',' + Math.floor((segs[k + 1] + segs[k + 3]) / 2 / BORDER_TILE);
+      let a = by.get(key); if (!a) by.set(key, a = []); a.push(segs[k], segs[k + 1], segs[k + 2], segs[k + 3]);
+    }
+    return [...by.values()].flatMap(chain);
+  };
+  return { between: tiled(between), wild: tiled(wild), inner: tiled(inner) };
 }
 
 function strokeSegs(x, segs) {
@@ -921,6 +932,7 @@ function newFaction(kind, capital, parent) {
   f.gov = kind === 'horde' ? 'horde' : parent && parent.gov === 'republic' && kind === 'rebel' ? 'republic' : 'kingdom';
   f.house = f.gov === 'kingdom' || f.gov === 'horde' ? newHouse(kind === 'horde' ? 'clan' : null) : null;
   f.faith = kind === 'horde' ? steppeFaith() : faithOf[capital] >= 0 ? faithOf[capital] : parent ? parent.faith : faiths.length ? 0 : newFaith();
+  f.overlord = -1; f.liberty = 0; f.vassalSince = 0;
   f.men = 0; f.infamy = 0; f.claims = {}; f.tributes = []; f.gold = parent ? 0 : 5; f.peaceSince = year(); f.golden = 0; f.bankrupt = 0; f.revolYear = -99;
   f.ruler = newRuler(f, kind === 'realm' ? undefined : rnd(25, 45));
   factions.push(f);
@@ -1007,7 +1019,13 @@ function declareWar(X, Y, name, quiet, goalType) {
   raiseHosts(X, w); raiseHosts(Y, w);
   if (!quiet) event(`${fn(X)} declares war on ${fn(Y)}${goalPhrase(w, X, Y)}. So begins ${w.name}.`, [X, Y], lvl((sig(X, 1.5) || sig(Y, 1.5)) && sig(X, .5) && sig(Y, .5)));
   // allies are called to the banners, on both sides: the attacked can count on its friends more than the attacker
-  if (w.goal.type !== 'independence' && X.kind !== 'horde') {
+  // vassals always march with their overlord, and an overlord always defends its vassals
+  if (w.goal.type !== 'liberation') {
+    for (const V of vassalsOf(X)) if (!sideOf(w, V.id)) joinWar(w, V, 'A', X);
+    const defenders = [Y, isVassal(Y) ? factions[Y.overlord] : null].filter(f => f && f.alive);
+    for (const D of defenders) { if (D !== Y && !sideOf(w, D.id)) joinWar(w, D, 'B', Y); for (const V of vassalsOf(D)) if (!sideOf(w, V.id)) joinWar(w, V, 'B', Y); }
+  }
+  if (w.goal.type !== 'independence' && w.goal.type !== 'liberation' && X.kind !== 'horde') {
     for (const id of [...Y.allies]) { const A = factions[id]; if (A.alive && !sideOf(w, id) && !X.allies.has(id) && R() < A.traits.loyal * .85) joinWar(w, A, 'B', Y); }
     for (const id of [...X.allies]) { const A = factions[id]; if (A.alive && !sideOf(w, id) && !Y.allies.has(id) && R() < A.traits.loyal * .45) joinWar(w, A, 'A', X); }
   } else if (X.kind === 'horde') {
@@ -1087,10 +1105,67 @@ function largestBlock(ids) {
   }
   return best;
 }
+// ---------- vassals ----------
+// A vassal keeps its own land and rulers but serves an overlord: it pays a fifth of its income, fights in its
+// overlord's wars and is defended by it, and may not start wars of its own, except one for its freedom.
+const isVassal = f => f && f.overlord >= 0;
+const vassalsOf = O => factions.filter(f => f.alive && f.overlord === O.id);
+const sameBloc = (a, b) => { const A = factions[a], B = factions[b]; return !!A && !!B && (A.overlord === b || B.overlord === a || (A.overlord >= 0 && A.overlord === B.overlord)); };
+// a vassal's colour leans toward its overlord's, so a bloc reads as one on the map
+const realmColor = f => f.overlord >= 0 && factions[f.overlord] ? mix(f.color, factions[f.overlord].color, .45) : f.color;
+function vassalise(V, O, infamy) {
+  V.overlord = O.id; V.vassalSince = year(); V.liberty = 20;
+  for (const id of [...V.allies]) factions[id].allies.delete(V.id);
+  V.allies.clear(); O.allies.delete(V.id);
+  // a vassal's own vassals go free: no one serves two masters
+  for (const s of vassalsOf(V)) freeVassal(s, `${fn(V)} itself bends the knee, and ${fn(s)} goes free.`);
+  O.infamy += infamy; dirty = true;
+}
+function freeVassal(V, text) {
+  V.overlord = -1; V.liberty = 0; dirty = true;
+  if (text) event(text, [V], lvl(sig(V)));
+}
+// once a year: each vassal weighs its overlord; the restless rise, the loyal are slowly absorbed
+function vassalYear() {
+  for (const V of aliveList()) {
+    if (!isVassal(V)) continue;
+    const O = factions[V.overlord];
+    if (!O || !O.alive) { freeVassal(V, `With ${O ? fn(O) : 'its overlord'} gone, ${fn(V)} answers to no one.`); continue; }
+    const ratio = V.power / Math.max(1, O.power), yrs = year() - V.vassalSince;
+    // an overlord in trouble (broke, its capital sacked, losing a war, at war on several fronts) emboldens its vassals
+    const losing = wars.some(w => sideOf(w, O.id) && warScore(w).score * (sideOf(w, O.id) === 'A' ? 1 : -1) < -25);
+    const want = 15 + ratio * 80 + (V.faith !== O.faith ? 15 : 0) + (O.bankrupt > tick ? 15 : 0) + (O.nWars > 1 ? 10 : 0) + (O.lostCap > tick ? 15 : 0) + (losing ? 20 : 0)
+      + Math.min(20, (O.infamy || 0) * .3) - Math.min(25, yrs * .5);
+    V.liberty = clamp((V.liberty || 0) + (clamp(want, 0, 100) - (V.liberty || 0)) * .3, 0, 100);
+    if (warBetween(V, O)) continue;
+    if (V.liberty > 55 && R() < .15) {
+      const w = declareWar(V, O, `the ${V.name} War of Liberation`, true, 'liberation');
+      if (w) {
+        event(`${fn(V)} throws off the rule of ${fn(O)}: ${w.name} begins.`, [V, O], lvl(sig(V, .5) || sig(O), sig(V) ? 'big' : ''));
+        if (sig(V)) moment(55, hexes[V.capital], 'A War of Liberation', `${V.name} rises against ${O.name}`);
+        // other restless vassals of the same overlord may seize the moment
+        for (const S of vassalsOf(O)) if (S !== V && S.liberty > 50 && R() < .5) { S.overlord = -1; joinWar(w, S, 'A', V); }
+      }
+    } else if (V.liberty < 30 && yrs >= 40 && V.size <= O.size * .25 && V.faith === O.faith && R() < .08) {
+      for (const h of land) if (owner[h.i] === V.id) { owner[h.i] = O.id; occ[h.i] = -1; }
+      V.absorbedBy = O.id; dirty = true;
+      event(`After ${yrs} loyal years, ${fn(V)} is peacefully integrated into ${fn(O)}.`, [V, O], lvl(sig(V, .5)));
+    }
+  }
+}
 function applyTreaty(w, res) {
   const W = new Set(res.win === 'A' ? w.A : w.B), Ls = new Set(res.win === 'A' ? w.B : w.A);
   const WL = factions[res.win === 'A' ? w.a : w.b], LL = factions[res.win === 'A' ? w.b : w.a], tm = townMap();
   let budget = res.budget; const terms = [];
+  if (w.goal.type === 'liberation') {
+    const V = factions[w.a], O = factions[w.b];
+    if (res.win === 'B' && budget >= 35) {
+      V.overlord = O.id; V.liberty = 10; V.vassalSince = year();
+      V.tributes.push({ to: O.id, amt: Math.round(budget * .06 * 10) / 10, until: year() + 10 });
+      terms.push({ kind: 'resubdued', V, O });
+    } else { V.overlord = -1; V.liberty = 0; dirty = true; terms.push({ kind: 'liberated', V, O }); }
+    return terms;
+  }
   if (w.goal.type === 'independence') {
     const rebel = factions[w.a], crown = factions[w.b];
     if (res.win === 'B' && budget >= 35) {
@@ -1110,8 +1185,13 @@ function applyTreaty(w, res) {
       owner[h.i] = W.has(o) && h.nb.some(n => owner[n] === o) ? o : WL.id; occ[h.i] = -1;
     }
     LL.absorbedBy = WL.id; dirty = true; WL.infamy += union ? 10 : 25;
+    for (const s of vassalsOf(LL)) freeVassal(s, null);
     terms.push({ kind: 'annex', by: WL, of: LL, union });
     return terms;
+  }
+  // a medium-sized loser can be made to swear fealty
+  if (budget >= 60 && LL.kind !== 'horde' && !isVassal(LL) && !isVassal(WL) && LL.size <= WL.size * .6 && !vassalsOf(LL).length) {
+    vassalise(LL, WL, 15); budget -= 60; terms.push({ kind: 'vassal', V: LL, O: WL });
   }
   // a holy war can free the faithful as a realm of their own
   if (w.goal.type === 'holy' && budget >= 25) {
@@ -1122,7 +1202,8 @@ function applyTreaty(w, res) {
       const n = newFaction('realm', seat, LL);
       for (const i of region) owner[i] = n.id;
       n.faith = WL.faith; n.size = region.length; n.men = region.length * 200; dirty = true; budget -= 25;
-      ally(n, WL); terms.push({ kind: 'release', from: LL, realm: n, faith: faiths[WL.faith].name });
+      if (!isVassal(WL)) vassalise(n, WL, 0); else ally(n, WL);
+      terms.push({ kind: 'release', from: LL, realm: n, faith: faiths[WL.faith].name });
     }
   }
   // provinces: only those the victors hold, the war's goal first, then the richest; never the loser's capital
@@ -1164,6 +1245,9 @@ function treatyText(w, res, terms) {
     : t.kind === 'annex' ? (t.union ? `${fn(t.of)} passes to the crown of ${fn(t.by)}` : `${fn(t.of)} is annexed by ${fn(t.by)}`)
     : t.kind === 'release' ? `the faithful of ${t.faith} in ${fn(t.from)} are freed as ${fn(t.realm)}`
     : t.kind === 'tribute' ? `${fn(t.from)} pays ${fn(t.to)} a tribute of ${t.amt} gold a year for ten years`
+    : t.kind === 'vassal' ? `${fn(t.V)} swears fealty to ${fn(t.O)} as its vassal`
+    : t.kind === 'liberated' ? `${fn(t.O)} releases ${fn(t.V)} from its service`
+    : t.kind === 'resubdued' ? `${fn(t.V)} returns to the service of ${fn(t.O)} and pays for its defiance`
     : t.kind === 'independence' ? `${fn(t.crown)} recognises the independence of ${fn(t.rebel)}`
     : `the rebels of ${fn(t.rebel)} are crushed and their lands return to ${fn(t.crown)}`);
   const tname = `the Treaty of ${placeName(false)}`;
@@ -1179,6 +1263,8 @@ function endWar(w, res) {
   for (const h of land) { const o = occ[h.i], ow = owner[h.i]; if (o >= 0 && ((A.has(o) && B.has(ow)) || (B.has(o) && A.has(ow)))) occ[h.i] = -1; }
   const until = tick + 12 * rnd(8, 20) * (res && res.budget > 50 ? 1.5 : 1);
   for (const a of w.A) for (const b of w.B) { factions[a].truce.set(b, until); factions[b].truce.set(a, until); }
+  // a war of liberation that ends without a victor leaves the vassal free in fact
+  if (w.goal.type === 'liberation' && (!res || res.white) && factions[w.a] && factions[w.a].alive) { factions[w.a].overlord = -1; dirty = true; }
   if (res === null) return;                                    // a war that simply lapsed, its leaders gone
   const L = factions[w.a], D = factions[w.b], who = [L, D].filter(f => f.alive);
   const nProv = terms.reduce((n, t) => n + (t.n || 0), 0), annex = terms.find(t => t.kind === 'annex');
@@ -1191,6 +1277,7 @@ function endWar(w, res) {
   }
 }
 function ally(A, B) {
+  if (isVassal(A) || isVassal(B)) return;               // a vassal's only alliance is its oath
   if (A.allies.size >= 3 || B.allies.size >= 3) return;
   A.allies.add(B.id); B.allies.add(A.id);
   event(`${fn(A)} and ${fn(B)} swear the ${placeName(false)} Pact.`, [A, B], lvl(sig(A) && sig(B)));
@@ -1329,6 +1416,7 @@ function wealthYear() {
     if (f.plague > 0) income *= .7;
     // an overgrown empire's court and governors eat its revenue
     const share = f.size / landCount; if (share > .25) income *= Math.max(.2, 1 - (share - .25) * 2.5);
+    if (isVassal(f) && factions[f.overlord].alive) { const due = Math.max(0, income * .2); income -= due; factions[f.overlord].gold += due; }
     // running a realm costs in proportion to its size; war costs what its armies in the field cost
     const field = armyStr.get(f.id) || 0;
     const upkeep = f.kind === 'horde' ? 0 : f.size * .06 + field / 1000 * .35;
@@ -1856,7 +1944,7 @@ function diplomacy() {
     if (warBetween(A, B)) continue;
     if (A.allies.has(B.id)) {
       for (const [X, Y] of [[A, B], [B, A]]) {
-        if (X.traits.loyal < .45 && X.power > Y.power * 1.6 && R() < .12 * X.traits.ambit) {
+        if (!isVassal(X) && !sameBloc(X.id, Y.id) && X.traits.loyal < .45 && X.power > Y.power * 1.6 && R() < .12 * X.traits.ambit) {
           const w = declareWar(X, Y, null, true);
           if (w) event(`Faithless ${fn(X)} breaks its oaths and falls upon its ally ${fn(Y)}: ${w.name} begins.`, [X, Y], lvl(sig(X, .5) && sig(Y, .5), 'big'));
           if (w && sig(X, .5) && sig(Y, .5)) { note(hexes[Y.capital], `${X.name} betrayed its ally here`); moment(50, hexes[Y.capital], `Betrayal`, `${X.name} turns on its ally ${Y.name}`); }
@@ -1866,7 +1954,7 @@ function diplomacy() {
       continue;
     }
     for (const [X, Y] of [[A, B], [B, A]]) {
-      if ((X.truce.get(Y.id) || 0) > tick) continue;
+      if ((X.truce.get(Y.id) || 0) > tick || isVassal(X) || sameBloc(X.id, Y.id)) continue;
       const ratio = X.power / Math.max(.1, Y.power), share = Y.size / landCount;
       let p = .005 + X.traits.aggr * .06 * clamp(ratio - .9, 0, 1.5) + (share > .28 ? .12 : 0) + (X.horde > .3 ? .3 : 0);
       // faith divides, priests preach holy war, merchants prefer trade, and a rich neighbour is a tempting one
@@ -1974,8 +2062,16 @@ function absorptions() {
       if (g.alive && g.size >= 4 * f.size && !warBetween(f, g) && (!lord || g.size > lord.size)) lord = g;
     }
     if (!lord || R() > .12 + (1 - f.traits.ambit) * .12) continue;
+    if (isVassal(f)) continue;
+    // a realm of some size keeps its crown as a vassal; a petty one is simply folded in
+    if (f.size >= 3 && !isVassal(lord) && lord.kind !== 'horde') {
+      vassalise(f, lord, 3);
+      event(`${rulerName(f.ruler)} of ${fn(f)} bends the knee and becomes a vassal of ${fn(lord)}.`, [f, lord], lvl(sig(f, .5)));
+      continue;
+    }
     for (const h of land) if (owner[h.i] === f.id) owner[h.i] = lord.id;
     f.absorbedBy = lord.id; dirty = true;
+    for (const s of vassalsOf(f)) freeVassal(s, null);
     event(`${rulerName(f.ruler)} of ${fn(f)} bends the knee; its lands are folded into ${fn(lord)}.`, [f, lord], lvl(sig(f, .5)));
   }
 }
@@ -2001,6 +2097,7 @@ function die(f) {
     else { w.a = w.A.includes(w.a) ? w.a : w.A[0]; w.b = w.B.includes(w.b) ? w.b : w.B[0]; }
   }
   for (const g of factions) g.allies.delete(f.id);
+  for (const s of vassalsOf(f)) freeVassal(s, `With ${fn(f)} fallen, its vassal ${fn(s)} answers to no one.`);
   f.allies.clear();
   const great = f.peak >= landCount * .15;
   if (great) { collapse = { name: f.name, until: tick + 60 }; note(c, `Here ended ${f.name}`); moment(100, c, `The Fall of ${f.name}`, `Once ${f.peak} provinces, founded in Year ${f.founded}`); }
@@ -2033,7 +2130,7 @@ function eraCheck() {
 }
 function startEra(name, kind) {
   const info = new Map();
-  for (const f of aliveList()) info.set(f.id, { name: f.name, color: f.color, capital: f.capital, sub: styleOf(f) });
+  for (const f of aliveList()) info.set(f.id, { name: f.name, color: realmColor(f), capital: f.capital, sub: isVassal(f) ? `vassal of ${factions[f.overlord].name}` : styleOf(f) });
   eras.push({ name, kind, start: year(), snap: { owner: Int16Array.from(owner), info } });
   if (eras.length > 1) { event(name, [], 'era'); moment(90, null, name, `a new age begins in Year ${year()}`); }
   renderTimeline();
@@ -2049,7 +2146,7 @@ function simTick() {
   if (tick % 3 === 0) revolts();
   rulers();
   for (const f of aliveList()) { if (f.plague > 0) f.plague--; if (f.famine > 0) f.famine--; }
-  if (tick % 12 === 0) { diplomacy(); absorptions(); tidyBorders(); disasters(); spawnTribes(); settlements(); faithYear(); ruleYear(); wealthYear(); eraCheck(); }
+  if (tick % 12 === 0) { diplomacy(); absorptions(); vassalYear(); tidyBorders(); disasters(); spawnTribes(); settlements(); faithYear(); ruleYear(); wealthYear(); eraCheck(); }
 }
 
 // ---------- new world ----------
@@ -2292,6 +2389,8 @@ function drawOverlay(x, own, labs, live, fields, borders) {
   x.strokeStyle = INK;
   x.setLineDash([3, 2.4, .1, 2.4]); x.lineWidth = 1.2; x.globalAlpha = .8; strokeLines(x, borders.between);
   x.setLineDash([.1, 3]); x.lineWidth = 1; x.globalAlpha = .45; strokeLines(x, borders.wild);
+  // inside a bloc, between an overlord and its vassals: a faint dotted line
+  if (borders.inner) { x.setLineDash([.1, 2.2]); x.lineWidth = .9; x.globalAlpha = .5; strokeLines(x, borders.inner); }
   x.setLineDash([]); x.globalAlpha = 1;
   // the followed realm gets a firm outline
   const fol = !faithMode && follow != null && fields.has(follow) && (!live || factions[follow]?.alive) ? follow : null;
@@ -2922,6 +3021,7 @@ function drawFields(x, t) {
     placed.push(cell);
   }
   t.fieldsShown = n; t.fieldsWanted = want;
+  t.fieldSigNow = placed.map(c => c.i + ',' + c.j).join(';') + (f.golden > tick ? 'g' : '');
   if (!drawIt || !placed.length) return;
   // the strips' colours, in a fixed order so the same fields always look the same
   const tintOf = placed.map(() => [0, 1, 2].map(() => Math.floor(rr() * tints.length)));
@@ -3109,7 +3209,7 @@ function ruin(x, px, py) {
 
 function liveInfo(id) {
   const f = factions[id]; if (!f || !f.alive) return null;
-  return { id, name: f.name, color: f.color, capital: f.capital, sub: f.kind === 'horde' ? 'the Horde' : styleOf(f) };
+  return { id, name: f.name, color: realmColor(f), capital: f.capital, sub: f.kind === 'horde' ? 'the Horde' : isVassal(f) ? `vassal of ${factions[f.overlord].name}` : styleOf(f) };
 }
 function draw() {
   ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -3133,9 +3233,13 @@ function draw() {
     for (const r of rs) o.clearRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
     ovClip = rs; drawOverlay(o, owner, labels, true, liveFields, liveBorders); ovClip = null;
     o.restore();
-    const inside = b => rs.some(r => b.x0 < r.x1 && b.x1 > r.x0 && b.y0 < r.y1 && b.y1 > r.y0);
+    // a name is safely redrawn only if it lies wholly inside a repainted area; one that moved across an edge needs a full redraw
+    const inside = b => rs.some(r => b.x0 >= r.x0 && b.x1 <= r.x1 && b.y0 >= r.y0 && b.y1 <= r.y1);
     const key = bs => bs.filter(b => !inside(b)).map(b => [b.x0, b.y0, b.x1, b.y1].map(Math.round).join(',')).sort().join(';');
     if (key(before) !== key(labelBoxes)) ovDirty = true;
+    // a town outside the repainted areas whose fields shifted (neighbours compete for the same ground) needs a full redraw
+    if (towns.some(t => t.fieldSigNow !== t.fieldSigShown && !inside(townArea(t)))) ovDirty = true;
+    for (const t of towns) t.fieldSigShown = t.fieldSigNow;
   }
   if (ovDirty) {
     ovView = { scale, ox, oy }; ovRects = null; lastFullOv = performance.now(); pruneTownCache();
@@ -3144,6 +3248,7 @@ function draw() {
     o.setTransform(1, 0, 0, 1, 0, 0); o.clearRect(0, 0, ovC.width, ovC.height); o.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * ox, dpr * oy);
     if (viewEra) drawOverlay(o, viewEra.snap.owner, snapLabels, false, snapFields, snapBorders); else if (faithMode) drawOverlay(o, faithView, labels, false, liveFields, liveBorders); else drawOverlay(o, owner, labels, true, liveFields, liveBorders);
     ovDirty = false;
+    for (const t of towns) t.fieldSigShown = t.fieldSigNow;
   }
   { const k = scale / ovView.scale;
     ctx.save(); ctx.setTransform(k, 0, 0, k, dpr * (ox - ovView.ox * k), dpr * (oy - ovView.oy * k)); ctx.drawImage(ovC, 0, 0); ctx.restore(); }
@@ -3188,6 +3293,8 @@ function renderCard() {
       <dt>Treasury</dt><dd>${treasuryWord(f)}${f.golden > tick ? ', <b>in a golden age</b>' : ''}${f.bankrupt > tick ? ', <b>bankrupt</b>' : ''}</dd>
       ${(() => { const kin = marriages.filter(m => (m.a === f.id || m.b === f.id) && year() - m.year < 80).map(m => factions[m.a === f.id ? m.b : m.a]).filter(g => g.alive); return kin.length ? `<dt>Kin</dt><dd>${[...new Set(kin)].map(fn).join(', ')}</dd>` : ''; })()}
       <dt>Temper</dt><dd>${traitWords(f.traits)}</dd>
+      ${isVassal(f) ? `<dt>Overlord</dt><dd>${fn(factions[f.overlord])} <i style="color:var(--muted)">(${f.liberty > 55 ? 'defiant' : f.liberty > 35 ? 'restless' : 'loyal'})</i></dd>` : ''}
+      ${vassalsOf(f).length ? `<dt>Vassals</dt><dd>${vassalsOf(f).map(fn).join(', ')}</dd>` : ''}
       <dt>Allies</dt><dd>${allies.join(', ') || '—'}</dd>
       <dt>At war</dt><dd>${foes.join('; ') || '—'}</dd>
       ${f.tributes && f.tributes.length ? `<dt>Tribute</dt><dd>pays ${f.tributes.map(tr => fn(factions[tr.to])).join(', ')}</dd>` : ''}
@@ -3362,10 +3469,11 @@ const townSig = t => {
     f ? f.faith % 2 : '', f && f.golden > tick ? 'g' : ''].join('|');
 };
 const roadSig = r => (r.used ? 'u' : '') + (r.age < 15 ? 'd' : '') + Math.round(Math.min(r.age, 100) / 25);
-const labelSig = l => [Math.round(l.x), Math.round(l.y), Math.round(l.size), l.name, l.sub, l.capital].join('|');
+const labelSig = l => [Math.round(l.x), Math.round(l.y), Math.round(l.size), l.name, l.sub, l.capital, l.color].join('|');
 const labelBox = l => { const half = l.size * (l.name.length * .55 + 2), sx = l.cands ? Math.max(...l.cands.map(c => Math.abs(c[0] - l.x))) : 0, sy = l.cands ? Math.max(...l.cands.map(c => Math.abs(c[1] - l.y))) : 0; return { x0: l.x - half - sx, x1: l.x + half + sx, y0: l.y - l.size * 2 - sy - 16, y1: l.y + l.size * 2 + sy + 16 }; };
 function takeSnapshot() {
   shown = { owner: Int16Array.from(owner), towns: new Map(towns.map(t => [t, townSig(t)])), roads: new Map([...roads].map(([k, r]) => [k, roadSig(r)])),
+    colors: new Map(factions.filter(f => f.alive).map(f => [f.id, realmColor(f)])),
     fighting: new Set(land.filter(h => tick - h.lastCap < 24).map(h => h.i)),
     battle: new Map(battlefields.map(bf => [bf, bfFade(bf)])), ruins: new Map(ruins.map(r => [r, ruinFade(r)])), labels: new Map(labels.map(l => [l.id, l])) };
 }
@@ -3373,7 +3481,7 @@ function takeSnapshot() {
 function changedAreas() {
   if (!shown || faithMode) return { wash: null, overlay: null };
   const wash = [], ov = [];
-  for (const h of land) if (owner[h.i] !== shown.owner[h.i]) { wash.push(box(h.x, h.y, 44)); ov.push(box(h.x, h.y, 46)); }
+  for (const h of land) if (owner[h.i] !== shown.owner[h.i] || (owner[h.i] >= 0 && shown.colors && shown.colors.get(owner[h.i]) !== realmColor(factions[owner[h.i]]))) { wash.push(box(h.x, h.y, 44)); ov.push(box(h.x, h.y, 46)); }
   const seen = new Set();
   for (const t of towns) {
     seen.add(t);
@@ -3393,7 +3501,10 @@ function changedAreas() {
   const now = new Map(labels.map(l => [l.id, l]));
   for (const [id, l] of now) { const o = shown.labels.get(id); if (!o || labelSig(o) !== labelSig(l)) { ov.push(labelBox(l)); if (o) ov.push(labelBox(o)); } }
   for (const [id, o] of shown.labels) if (!now.has(id)) ov.push(labelBox(o));
-  const w = mergeRects(wash), o = mergeRects(ov);
+  // overlay areas are widened to whole border tiles (see borderLines)
+  // (and a little past them, so line ends from the next tile that poke across the edge are redrawn too)
+  const snap = r => ({ x0: Math.floor(r.x0 / BORDER_TILE) * BORDER_TILE - 3, y0: Math.floor(r.y0 / BORDER_TILE) * BORDER_TILE - 3, x1: Math.ceil(r.x1 / BORDER_TILE) * BORDER_TILE + 3, y1: Math.ceil(r.y1 / BORDER_TILE) * BORDER_TILE + 3 });
+  const w = mergeRects(wash), o = mergeRects(ov.map(snap));
   return { wash: tooBig(w) ? null : w, overlay: tooBig(o) ? null : o };
 }
 function frame(now) {
@@ -3418,10 +3529,10 @@ function frame(now) {
       labels = computeLabels(fo, id => faiths[id] && { id: -1 - id, name: faiths[id].name.replace(/^the /, ''), color: faiths[id].color, capital: -1, sub: '' })
         .map(l => ({ ...l, ang: l.ang * .35, size: l.size * .8 }));   // long names: keep them level and modest
     } else {
-      liveFields = territoryFields(owner); liveBorders = borderLines(owner, liveFields);
+      liveFields = territoryFields(owner); liveBorders = borderLines(owner, liveFields, sameBloc);
       labels = computeLabels(owner, liveInfo);
       const ch = changedAreas();
-      renderWash(washC, owner, liveFields, id => factions[id].color, ch.wash);
+      renderWash(washC, owner, liveFields, id => realmColor(factions[id]), ch.wash);
       if (ch.overlay && !ovDirty && now - lastFullOv < 8000) ovRects = (ovRects || []).concat(ch.overlay);
       else ovDirty = true;
       takeSnapshot();
