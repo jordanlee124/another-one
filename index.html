@@ -1069,6 +1069,24 @@ function peaceTable() {
   }
 }
 // the treaty: the winner takes, up to its war score, what it can hold on to
+// the provinces of a realm reachable from its capital without leaving its land (optionally pretending one is gone)
+function heartland(f, without = -1) {
+  const seen = new Set(); if (owner[f.capital] !== f.id || f.capital === without) return seen;
+  const q = [f.capital]; seen.add(f.capital);
+  for (let k = 0; k < q.length; k++) for (const n of hexes[q[k]].nb) if (n !== without && !seen.has(n) && hexes[n].land && owner[n] === f.id) { seen.add(n); q.push(n); }
+  return seen;
+}
+// the largest connected block among a set of provinces
+function largestBlock(ids) {
+  const set = new Set(ids), seen = new Set(); let best = [];
+  for (const i of ids) {
+    if (seen.has(i)) continue;
+    const comp = [i]; seen.add(i);
+    for (let k = 0; k < comp.length; k++) for (const n of hexes[comp[k]].nb) if (set.has(n) && !seen.has(n)) { seen.add(n); comp.push(n); }
+    if (comp.length > best.length) best = comp;
+  }
+  return best;
+}
 function applyTreaty(w, res) {
   const W = new Set(res.win === 'A' ? w.A : w.B), Ls = new Set(res.win === 'A' ? w.B : w.A);
   const WL = factions[res.win === 'A' ? w.a : w.b], LL = factions[res.win === 'A' ? w.b : w.a], tm = townMap();
@@ -1086,14 +1104,18 @@ function applyTreaty(w, res) {
   for (const h of land) if (owner[h.i] === LL.id) { const v = provVal(h, tm); llVal += v; if (W.has(occ[h.i])) llOcc += v; }
   const union = w.goal.type === 'throne' && res.win === 'A' && budget >= 60;
   if (union || (LL.size <= Math.max(6, landCount * .04) && budget >= 75 && llOcc / Math.max(1, llVal) >= .6)) {
-    for (const h of land) if (owner[h.i] === LL.id) { owner[h.i] = W.has(occ[h.i]) ? occ[h.i] : WL.id; occ[h.i] = -1; }
+    // annexed land goes to the victor whose own land it touches (the occupier if it borders it), so no one gains an island
+    for (const h of land) if (owner[h.i] === LL.id) {
+      const o = occ[h.i];
+      owner[h.i] = W.has(o) && h.nb.some(n => owner[n] === o) ? o : WL.id; occ[h.i] = -1;
+    }
     LL.absorbedBy = WL.id; dirty = true; WL.infamy += union ? 10 : 25;
     terms.push({ kind: 'annex', by: WL, of: LL, union });
     return terms;
   }
   // a holy war can free the faithful as a realm of their own
   if (w.goal.type === 'holy' && budget >= 25) {
-    const region = land.filter(h => owner[h.i] === LL.id && h.i !== LL.capital && faithOf[h.i] === WL.faith).map(h => h.i);
+    const region = largestBlock(land.filter(h => owner[h.i] === LL.id && h.i !== LL.capital && faithOf[h.i] === WL.faith).map(h => h.i));
     for (const i of region) occ[i] = -1;
     if (region.length >= 3) {
       const seat = region.sort((p, q) => provVal(hexes[q], tm) - provVal(hexes[p], tm))[0];
@@ -1108,16 +1130,25 @@ function applyTreaty(w, res) {
   const goal = new Set(w.goal.hexes), ceded = new Map();
   const cands = land.filter(h => Ls.has(owner[h.i]) && W.has(occ[h.i]) && h.i !== factions[owner[h.i]].capital)
     .sort((p, q) => (goal.has(q.i) - goal.has(p.i)) || provVal(q, tm) - provVal(p, tm));
-  for (const h of cands) {
+  // a province is ceded only if it touches the receiver's land, and only if the loser keeps everything else
+  // joined to its capital; each pass can reach one province deeper
+  const taken = new Set(), heart = new Map();
+  const hl = f => { let s = heart.get(f.id); if (!s) heart.set(f.id, s = heartland(f)); return s; };
+  for (let pass = 0, grew = true; grew && pass < 12; pass++) { grew = false; for (const h of cands) {
+    if (taken.has(h.i) || !W.has(occ[h.i])) continue;
+    const to = occ[h.i], from = factions[owner[h.i]];
+    if (!h.nb.some(n => owner[n] === to)) continue;
+    const before = hl(from), after = heartland(from, h.i);
+    if (h.nb.some(n => owner[n] === from.id && before.has(n) && !after.has(n))) continue;
     const cost = 100 * provVal(h, tm) / Math.max(1, valOf.get(owner[h.i])) * .9;
     if (cost > budget) continue;
-    budget -= cost;
-    const to = occ[h.i], from = owner[h.i], key = from + '>' + to;
-    factions[from].claims[h.i] = year();
+    budget -= cost; taken.add(h.i); grew = true; heart.set(from.id, after);
+    const fromId = owner[h.i], key = fromId + '>' + to;
+    from.claims[h.i] = year();
     owner[h.i] = to; occ[h.i] = -1; factions[to].infamy += cost * .4;
-    let c = ceded.get(key); if (!c) ceded.set(key, c = { from: factions[from], to: factions[to], n: 0, towns: [] }); c.n++;
+    let c = ceded.get(key); if (!c) ceded.set(key, c = { from, to: factions[to], n: 0, towns: [] }); c.n++;
     const t = tm.get(h.i); if (t && t.pop >= TOWN) c.towns.push(t.name);
-  }
+  } }
   if (ceded.size) { dirty = true; for (const c of ceded.values()) terms.push({ kind: 'cede', ...c }); }
   // what remains is paid in gold, as tribute for ten years
   if (budget >= 6) {
@@ -1528,7 +1559,8 @@ function expansion() {
   for (const f of aliveList()) {
     if (!f.wildFront.length || R() > .22 * (.4 + f.traits.ambit) * (f.horde > .3 ? 1.6 : 1)) continue;
     let best = -1, bs = -1;
-    for (let k = 0; k < 3; k++) { const n = pick(f.wildFront), s = hexes[n].food + R(); if (s > bs) { bs = s; best = n; } }
+    // settlers prefer good land that rounds off the realm rather than straggling away from it
+    for (let k = 0; k < 3; k++) { const n = pick(f.wildFront), s = hexes[n].food + hexes[n].nb.filter(m => owner[m] === f.id).length * .8 + R(); if (s > bs) { bs = s; best = n; } }
     if (owner[best] >= 0 || (hexes[best].terrain === 'mountain' && R() < .5)) continue;
     owner[best] = f.id; dirty = true;
   }
@@ -1686,7 +1718,8 @@ function takeProvince(a, w, Y, t) {
   const X = factions[a.f], freeing = friendsIn(w, a.f).includes(owner[t.i]);
   t.lastCap = tick; addPuff(t);
   if (freeing) { occ[t.i] = -1; return; }
-  if (X.kind === 'horde') { owner[t.i] = X.id; occ[t.i] = -1; dirty = true; } else occ[t.i] = X.id;
+  // a horde keeps what it takes, and what is taken back from a horde is simply taken back
+  if (X.kind === 'horde' || Y.kind === 'horde') { owner[t.i] = X.id; occ[t.i] = -1; dirty = true; } else occ[t.i] = X.id;
   {
     {
       X.ruler.gained++; Y.ruler.lost++;
@@ -1882,6 +1915,13 @@ function disasters() {
   const hegemon = al.some(f => f.size / landCount > .3);
   if (R() < 1 / 70 + (hegemon ? 1 / 35 : 0)) spawnHorde();
   for (const f of al) { f.horde *= .87; f.fervor *= .8; }
+  // a generation after it rode in, a horde settles down and rules like any other realm
+  for (const f of al) if (f.kind === 'horde' && year() - f.founded >= 30 && f.size > 0) {
+    const old = f.ruler; old.end = year(); old.epithet = old.epithet || epithetFor(old); f.rulers.push(old);
+    f.kind = 'realm'; f.gov = 'kingdom'; f.horde = 0; f.house = newHouse(); f.ruler = newRuler(f, rnd(25, 45));
+    event(`The ${f.name} Horde settles in the lands it conquered: ${rulerName(f.ruler)} is crowned, first of House ${houses[f.house].name}.`, [f], lvl(sig(f), sig(f, 2) ? 'big' : ''));
+    dirty = true;
+  }
 }
 function spawnHorde() {
   const edge = land.map(h => [Math.min(h.x - MARGIN, MW - MARGIN - h.x, h.y - MARGIN, MH - MARGIN - h.y) + R() * 40, h])
@@ -1898,6 +1938,32 @@ function spawnHorde() {
   event(`From beyond the edge of the map ride ${fn(h)} under ${rulerName(h.ruler)}. The steppe-bells are heard for the first time.`, [h], 'big');
   note(t, `Here rode in the ${h.name} Horde`); moment(70, t, `The ${h.name} Horde`, `rides in from beyond the edge of the map`);
   for (const id of victims) declareWar(h, factions[id], null, true, 'conquest');
+}
+// Border tidying: a small piece of a realm cut off from its capital, inland and surrounded by one neighbour
+// it is at peace with, is sold to that neighbour, as real realms traded away their awkward enclaves.
+function tidyBorders() {
+  for (const f of aliveList()) {
+    if (owner[f.capital] !== f.id) continue;
+    const heart = heartland(f), seen = new Set(heart);
+    for (const h of land) {
+      if (owner[h.i] !== f.id || seen.has(h.i)) continue;
+      const comp = [h.i]; seen.add(h.i);
+      for (let k = 0; k < comp.length; k++) for (const n of hexes[comp[k]].nb) if (!seen.has(n) && hexes[n].land && owner[n] === f.id) { seen.add(n); comp.push(n); }
+      if (comp.length > 6 || comp.some(i => hexes[i].coast)) continue;           // a large piece, or one with its own harbour, stays
+      const around = new Map();
+      for (const i of comp) for (const n of hexes[i].nb) if (hexes[n].land && owner[n] !== f.id) around.set(owner[n], (around.get(owner[n]) || 0) + 1);
+      const total = [...around.values()].reduce((a, b) => a + b, 0);
+      const [gid, cnt] = [...around].sort((a, b) => b[1] - a[1])[0] || [-1, 0];
+      if (gid < 0 || cnt < total * .75 || R() > .35) continue;
+      const G = factions[gid];
+      if (!G || !G.alive || warBetween(f, G) || G.kind === 'horde' || comp.some(i => occ[i] >= 0)) continue;
+      const price = comp.length * 3;
+      for (const i of comp) owner[i] = gid;
+      G.gold -= price; f.gold += price; dirty = true;
+      const t = comp.map(i => townAt(i)).find(t => t && t.pop >= TOWN);
+      event(`${fn(f)} sells ${t ? 'the town of ' + t.name : comp.length === 1 ? 'a stranded province' : comp.length + ' stranded provinces'} to ${fn(G)}, which surrounds ${comp.length === 1 && !t ? 'it' : 'them'}.`, [f, G], 'minor');
+    }
+  }
 }
 function absorptions() {
   for (const f of aliveList()) {
@@ -1983,7 +2049,7 @@ function simTick() {
   if (tick % 3 === 0) revolts();
   rulers();
   for (const f of aliveList()) { if (f.plague > 0) f.plague--; if (f.famine > 0) f.famine--; }
-  if (tick % 12 === 0) { diplomacy(); absorptions(); disasters(); spawnTribes(); settlements(); faithYear(); ruleYear(); wealthYear(); eraCheck(); }
+  if (tick % 12 === 0) { diplomacy(); absorptions(); tidyBorders(); disasters(); spawnTribes(); settlements(); faithYear(); ruleYear(); wealthYear(); eraCheck(); }
 }
 
 // ---------- new world ----------
@@ -2288,7 +2354,7 @@ function drawOverlay(x, own, labs, live, fields, borders) {
     // battlefields: crossed swords and the battle's name, fading over a century and a half
     x.textAlign = 'center';
     for (const bf of battlefields) {
-      const fade = clamp(1 - (year() - bf.year) / 150, 0, 1); if (fade <= 0) continue;
+      const fade = bfFade(bf); if (fade <= 0) continue;
       x.globalAlpha = .55 + .45 * fade; battleMark(x, bf.x, bf.y);
       x.font = `italic ${11 * LZ}px "IM Fell English", Georgia, serif`;
       const label = `${bf.name}, ${bf.year}`, w = x.measureText(label).width, b = { x0: bf.x - w / 2 - 2, x1: bf.x + w / 2 + 2, y0: bf.y + 7, y1: bf.y + 7 + 12 * LZ };
@@ -2314,7 +2380,7 @@ function drawOverlay(x, own, labs, live, fields, borders) {
     // ruins of the fallen: the broken tower always, its old name only where there is room
     x.textAlign = 'center';
     for (const r of ruins) {
-      const fade = clamp(1 - (year() - r.year) / 200, 0, 1); if (fade <= 0) continue;
+      const fade = ruinFade(r); if (fade <= 0) continue;
       x.globalAlpha = .7 * fade; ruin(x, r.x, r.y);
       const fs = clamp(8 + Math.sqrt(r.peak), 9, 14) * LZ, t = `old ${r.name}`;
       x.font = `italic ${fs}px "IM Fell English", Georgia, serif`;
@@ -2606,7 +2672,7 @@ function drawRoads(x) {
   const fights = land.filter(h => tick - h.lastCap < 24);
   x.strokeStyle = '#6b4a2e';
   for (const r of roads.values()) {
-    const a = hexes[r.a], b = hexes[r.b], m = Math.min(r.age, 100) / 100;
+    const a = hexes[r.a], b = hexes[r.b], m = Math.round(Math.min(r.age, 100) / 25) * .25;   // in the same steps the redraw tracks
     const d = Math.hypot(b.x - a.x, b.y - a.y), bend = ((r.a * 7 + r.b * 13) % 2 ? 1 : -1) * .08;
     const cx = (a.x + b.x) / 2 - (b.y - a.y) * bend, cy = (a.y + b.y) / 2 + (b.x - a.x) * bend;
     const at = s => [(1 - s) ** 2 * a.x + 2 * (1 - s) * s * cx + s * s * b.x, (1 - s) ** 2 * a.y + 2 * (1 - s) * s * cy + s * s * b.y];
@@ -2991,7 +3057,7 @@ function drawTown(x, t) {
   const h = hexes[t.i];
   x.save(); x.translate(h.x, h.y); x.strokeStyle = t.ruined ? '#8a7660' : INK; x.lineWidth = .8; x.fillStyle = '#efe3c4';
   if (t.ruined) {
-    x.globalAlpha = clamp(1 - (year() - t.ruinYear) / 150, .2, .8);
+    x.globalAlpha = townRuinFade(t);
     x.beginPath(); x.moveTo(-3, 2); x.lineTo(-3, -1); x.lineTo(-1.5, -2.5); x.lineTo(0, -.5); x.lineTo(0, 2); x.moveTo(1.5, 2); x.lineTo(1.5, 0); x.lineTo(3, -1); x.lineTo(3, 2); x.stroke();
   } else if (t.pop >= CITY) {
     x.beginPath(); x.arc(0, 0, 6, 0, 7); x.fill(); x.lineWidth = 1.3; x.stroke();
@@ -3286,9 +3352,13 @@ const inClip = r => !ovClip || ovClip.some(c => r.x0 < c.x1 && r.x1 > c.x0 && r.
 const tooBig = rs => rs.reduce((n, r) => n + (r.x1 - r.x0) * (r.y1 - r.y0), 0) > MW * MH * .55;
 // a town's name grows in whole steps with the town, so a small change in size doesn't move its label
 const townFont = t => 11 + Math.min(13, Math.round(Math.sqrt(t.pop) * 2.6));
+// things that fade with the years do so in tenths, so each step can be tracked and redrawn
+const bfFade = bf => Math.round(clamp(1 - (year() - bf.year) / 150, 0, 1) * 10) / 10;
+const ruinFade = r => Math.round(clamp(1 - (year() - r.year) / 200, 0, 1) * 10) / 10;
+const townRuinFade = t => Math.round(clamp(1 - (year() - t.ruinYear) / 150, .2, .8) * 10) / 10;
 const townSig = t => {
   const n = builtCount(t.pop), o = owner[t.i], f = o >= 0 ? factions[o] : null;
-  return [t.ruined ? 'R' : '', townFont(t), Math.round(n / Math.max(4, n * .06)), Math.round(builtCount(t.peak || t.pop) / 6), kindOf(t), o,
+  return [t.ruined ? 'R' + townRuinFade(t) : '', townFont(t), Math.round(n / Math.max(4, n * .06)), Math.round(builtCount(t.peak || t.pop) / 6), kindOf(t), o,
     f ? f.faith % 2 : '', f && f.golden > tick ? 'g' : ''].join('|');
 };
 const roadSig = r => (r.used ? 'u' : '') + (r.age < 15 ? 'd' : '') + Math.round(Math.min(r.age, 100) / 25);
@@ -3296,7 +3366,8 @@ const labelSig = l => [Math.round(l.x), Math.round(l.y), Math.round(l.size), l.n
 const labelBox = l => { const half = l.size * (l.name.length * .55 + 2), sx = l.cands ? Math.max(...l.cands.map(c => Math.abs(c[0] - l.x))) : 0, sy = l.cands ? Math.max(...l.cands.map(c => Math.abs(c[1] - l.y))) : 0; return { x0: l.x - half - sx, x1: l.x + half + sx, y0: l.y - l.size * 2 - sy - 16, y1: l.y + l.size * 2 + sy + 16 }; };
 function takeSnapshot() {
   shown = { owner: Int16Array.from(owner), towns: new Map(towns.map(t => [t, townSig(t)])), roads: new Map([...roads].map(([k, r]) => [k, roadSig(r)])),
-    battle: new Set(battlefields), ruins: new Set(ruins), labels: new Map(labels.map(l => [l.id, l])) };
+    fighting: new Set(land.filter(h => tick - h.lastCap < 24).map(h => h.i)),
+    battle: new Map(battlefields.map(bf => [bf, bfFade(bf)])), ruins: new Map(ruins.map(r => [r, ruinFade(r)])), labels: new Map(labels.map(l => [l.id, l])) };
 }
 // the parts of the map that differ from the snapshot: { wash, overlay } as lists of rectangles, or null for "everything"
 function changedAreas() {
@@ -3312,10 +3383,12 @@ function changedAreas() {
   const rk = new Set();
   for (const [k, r] of roads) { rk.add(k); if (shown.roads.get(k) !== roadSig(r)) { const a = hexes[r.a], b = hexes[r.b]; ov.push({ x0: Math.min(a.x, b.x) - 12, y0: Math.min(a.y, b.y) - 12, x1: Math.max(a.x, b.x) + 12, y1: Math.max(a.y, b.y) + 12 }); } }
   for (const [k] of shown.roads) if (!rk.has(k)) { const [a, b] = k.split('-').map(Number); ov.push({ x0: Math.min(hexes[a].x, hexes[b].x) - 12, y0: Math.min(hexes[a].y, hexes[b].y) - 12, x1: Math.max(hexes[a].x, hexes[b].x) + 12, y1: Math.max(hexes[a].y, hexes[b].y) + 12 }); }
-  for (const bf of battlefields) if (!shown.battle.has(bf)) ov.push(box(bf.x, bf.y, 80));
-  for (const bf of shown.battle) if (!battlefields.includes(bf)) ov.push(box(bf.x, bf.y, 80));
-  for (const r of ruins) if (!shown.ruins.has(r)) ov.push(box(r.x, r.y, 70));
-  for (const r of shown.ruins) if (!ruins.includes(r)) ov.push(box(r.x, r.y, 70));
+  // roads are drawn cut near fresh fighting: wherever that starts or ends, repaint
+  for (const h of land) if ((tick - h.lastCap < 24) !== shown.fighting.has(h.i)) ov.push(box(h.x, h.y, 32));
+  for (const bf of battlefields) if (shown.battle.get(bf) !== bfFade(bf)) ov.push(box(bf.x, bf.y, 80));
+  for (const [bf] of shown.battle) if (!battlefields.includes(bf)) ov.push(box(bf.x, bf.y, 80));
+  for (const r of ruins) if (shown.ruins.get(r) !== ruinFade(r)) ov.push(box(r.x, r.y, 70));
+  for (const [r] of shown.ruins) if (!ruins.includes(r)) ov.push(box(r.x, r.y, 70));
   // realm names that moved, changed or vanished: repaint where they were and where they are now
   const now = new Map(labels.map(l => [l.id, l]));
   for (const [id, l] of now) { const o = shown.labels.get(id); if (!o || labelSig(o) !== labelSig(l)) { ov.push(labelBox(l)); if (o) ov.push(labelBox(o)); } }
