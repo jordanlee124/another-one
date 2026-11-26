@@ -51,7 +51,9 @@
     background: rgba(239,227,196,.95); border: 1px solid var(--ink); padding: 6px 12px; max-width: calc(100% - 32px);
     box-shadow: 0 2px 8px rgba(0,0,0,.4);
   }
-  #founding[hidden] { display: none; }
+  #founding[hidden], #catchup[hidden] { display: none; }
+  #catchup { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 1; background: rgba(239,227,196,.95); border: 1px solid var(--ink); padding: 6px 12px; max-width: calc(100% - 32px); box-shadow: 0 2px 8px rgba(0,0,0,.4); }
+  #catchup #catchyr { color: var(--blood); font-family: "IM Fell English SC", Georgia, serif; }
   #founding #foundyr { color: var(--blood); font-family: "IM Fell English SC", Georgia, serif; }
   #founding button { background: var(--paper-2); color: var(--ink); border-color: var(--muted); }
   #banner {
@@ -157,6 +159,9 @@
       <button id="zin" aria-label="Zoom in" title="Zoom in (+)">+</button>
       <button id="zout" aria-label="Zoom out" title="Zoom out (−)">−</button>
       <button id="zreset" aria-label="Show the whole map" title="Whole map (0)">⤢</button>
+    </div>
+    <div id="catchup" hidden>
+      <span><i>While you were away, the years pass…</i> <span id="catchyr"></span></span>
     </div>
     <div id="founding" hidden>
       <span><i>The founding years pass quickly…</i> <span id="foundyr"></span></span>
@@ -1774,6 +1779,7 @@ function initWorld(s) {
   towns = []; roads = new Map(); battlefields = []; houses = []; faiths = []; marriages = [];
   faithOf = new Int16Array(hexes.length).fill(-1); faithMode = false; syncFaithButton();
   factions = []; wars = []; chron = []; eras = []; ruins = []; notes = []; tick = 0; collapse = null; lastWarYear = 0;
+  catching = null; if (document.getElementById('catchup')) document.getElementById('catchup').hidden = true;
   townCache.clear(); cachePx = 0; shown = null; ovRects = null; moments = []; momentNow = null; founding = false; follow = null; viewEra = null; labels = []; snapLabels = []; puffs = []; fires = []; battleFx = [];
   document.getElementById('chron').innerHTML = '';
   document.getElementById('banner').hidden = true;
@@ -1832,7 +1838,8 @@ const unb64 = str => { const bin = atob(str), u = new Uint8Array(bin.length); fo
 function packWorld(maxSnaps) {
   const now = year();
   return {
-    v: 4, seed, rs, tick, savedAt: Date.now(), paused, speed, follow, worldName, founding,
+    // years still owed to an unfinished catch-up stay owed if the page closes now
+    v: 4, seed, rs, tick, savedAt: Date.now() - (catching ? catching.left / TPS * 1000 : 0), paused, speed, follow, worldName, founding,
     owner: b64(owner), caps: land.filter(h => tick - h.lastCap < 36).map(h => [h.i, h.lastCap]),
     factions: factions.map(f => {
       const { fronts, wildFront, allies, truce, log, rulers, ...rest } = f;
@@ -1908,12 +1915,33 @@ function offerReturn(prev) {
   };
 }
 // replay the years that passed while nobody was watching, then say what happened
+// The missed years are played out a slice at a time, a few milliseconds per frame, so the page keeps drawing
+// and responding while history catches up; the summary appears when it is done.
+let catching = null;
+const CATCH_SLICE_MS = 40;
 function catchUp(ms) {
-  if (paused || ms < 20000) return;
+  if (paused || ms < 20000 || catching) return;
   const ticks = Math.min(Math.floor(ms / 1000 * TPS), MAX_CATCHUP_YEARS * 12);
-  const y0 = year(), c0 = chron.length, alive0 = new Set(aliveList().map(f => f.id)), f0 = factions.length;
-  bulk = true; for (let k = 0; k < ticks; k++) simTick(); bulk = false;
-  dirty = true;
+  catching = { left: ticks, total: ticks, y0: year(), c0: chron.length, alive0: new Set(aliveList().map(f => f.id)), f0: factions.length,
+    capped: ms / 1000 * TPS > MAX_CATCHUP_YEARS * 12 };
+  showCatchUp();
+}
+function catchUpStep(now) {
+  // a frame that redraws the borders does no history, so the two never pile up into one long pause
+  if (dirty && now - lastWash > 1500) return;
+  const t0 = performance.now();
+  bulk = true;
+  while (catching.left > 0 && performance.now() - t0 < CATCH_SLICE_MS) { simTick(); catching.left--; }
+  bulk = false; dirty = true; acc = 0;
+  showCatchUp();
+  if (catching.left <= 0) { const c = catching; catching = null; showCatchUp(); finishCatchUp(c); }
+}
+function showCatchUp() {
+  const el = document.getElementById('catchup');
+  el.hidden = !catching;
+  if (catching) document.getElementById('catchyr').textContent = `Year ${year()} · ${Math.round((1 - catching.left / catching.total) * 100)}%`;
+}
+function finishCatchUp({ y0, c0, alive0, f0, capped }) {
   const yrs = year() - y0; if (yrs < 1) return;
   const fresh = chron.slice(c0), fell = [...alive0].filter(id => !factions[id].alive).length;
   const rose = factions.slice(f0).filter(f => f.alive).length;
@@ -1926,7 +1954,6 @@ function catchUp(ms) {
     .sort((a, b) => b.s - a.s || b.i - a.i)
     .filter(({ s }) => s !== 35 || ++disputes <= 2)
     .slice(0, 7).sort((a, b) => a.i - b.i).map(({ e }) => e);
-  const capped = ms / 1000 * TPS > MAX_CATCHUP_YEARS * 12;
   const el = document.getElementById('away');
   el.innerHTML = `<h3>While you were away</h3>
     <p>${yrs} year${yrs === 1 ? '' : 's'} passed in ${worldName}${capped ? ' (the scribes stopped counting at ' + MAX_CATCHUP_YEARS + ')' : ''}.
@@ -3074,14 +3101,15 @@ function frame(now) {
   // the founding runs fast, but waits while the welcome panel is open so nobody misses it
   const holding = founding && !document.getElementById('away').hidden;
   updateMoment(now);
-  if (!paused && !holding) {
+  if (catching) catchUpStep(now);
+  else if (!paused && !holding) {
     acc += dt * TPS * (founding ? FOUNDING_SPEED : speed) * momentSlow(now) / 1000;
     let n = 0; while (acc >= 1 && n < 100) { simTick(); acc--; n++; }
     if (acc > 4) acc = 0;
     if (n) needDraw = true;
     if (founding && year() > PRESIM_YEARS) endFounding();
   }
-  if (dirty && now - lastWash > 350) {
+  if (dirty && now - lastWash > (catching ? 1500 : 350)) {
     if (faithMode) {
       // the faith map: the same washes and borders, drawn by belief instead of by crown
       const fo = Int16Array.from(faithOf); for (const h of hexes) if (!h.land) fo[h.i] = -1;
