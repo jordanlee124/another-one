@@ -1132,7 +1132,8 @@ const TOWN = 1, CITY = 2.5, GREAT = 6, METRO = 18; // population thresholds: vil
 const BUILDINGS_PER_POP = 14;                      // how many drawn buildings each unit of population fills
 const townAt = i => towns.find(t => t.i === i && !t.ruined);
 const kindOf = t => t.pop >= METRO ? 'metropolis' : t.pop >= GREAT ? 'great' : t.pop >= CITY ? 'city' : t.pop >= TOWN ? 'town' : 'village';
-const builtCount = pop => Math.round(pop * BUILDINGS_PER_POP) + 2;
+const builtCount = pop => Math.round(Math.pow(Math.max(0, pop), .72) * BUILDINGS_PER_POP) + 2;
+const popForBuilt = n => Math.pow(Math.max(0, n - 2) / BUILDINGS_PER_POP, 1 / .72);
 // roughly how far a town's houses reach from its centre at a given size, in map units
 const townRadius = pop => 6 + BLOCK * Math.sqrt(builtCount(pop) / 12 / Math.PI) * 1.15;
 // a straight road needs dry land the whole way
@@ -1180,7 +1181,7 @@ function settlements() {
       let near = Infinity;
       for (const o of towns) if (o !== t && !o.ruined) near = Math.min(near, Math.hypot(hexes[o.i].x - h.x, hexes[o.i].y - h.y));
       const fitR = (near / 2 - 6) / (BLOCK * 1.15);
-      room = Math.min(room, Math.max(1, (fitR * fitR * Math.PI * 12 - 2) / BUILDINGS_PER_POP));
+      room = Math.min(room, Math.max(1, popForBuilt(fitR * fitR * Math.PI * 12)));
       // growth compounds: a big, rich city draws people faster than a village does
       if (t.pop < room) t.pop += (t.pop * .05 + h.food * .006) * prosper * (f.nWars > 0 ? .3 : 1) * (1 - t.pop / room);
       else t.pop += (room - t.pop) * .03;
@@ -1877,7 +1878,9 @@ function drawOverlay(x, own, labs, live, fields, borders) {
   // towns and cities, then their names where there is room
   if (live) {
     const reach = new Map();
-    for (const t of towns) drawFields(x, t);          // all farmland first, so no town's fields cover another's houses
+    // every town's houses claim their ground, then fields are laid out largest town first on what is left
+    resetRegister(); for (const t of towns) claimTown(t);
+    for (const t of [...towns].sort((a, b) => b.pop - a.pop)) drawFields(x, t);
     for (const t of towns) { if (t.ruined) drawTown(x, t); else reach.set(t, drawSettlement(x, t)); }
     x.textBaseline = 'middle';
     for (const t of [...towns].filter(t => !t.ruined && t.pop >= TOWN && !factions.some(f => f.alive && f.capital === t.i)).sort((a, b) => b.pop - a.pop)) {
@@ -2251,7 +2254,7 @@ function wallTower(x, px, py) {
   x.fillStyle = '#7a5a44'; x.beginPath(); x.moveTo(px - 1.8, py - 4); x.lineTo(px, py - 6.8); x.lineTo(px + 1.8, py - 4); x.closePath(); x.fill(); x.stroke();
 }
 // field colours: ripe wheat, green crops, fallow earth; a golden age turns them richer
-const FIELD_TINTS = ['rgba(205,182,112,.5)', 'rgba(150,165,96,.45)', 'rgba(176,150,98,.4)'];
+const FIELD_TINTS = ['rgba(205,182,112,.62)', 'rgba(150,165,96,.58)', 'rgba(176,150,98,.52)'];
 const FIELD_LUSH = ['rgba(222,190,92,.62)', 'rgba(140,172,80,.58)', 'rgba(200,176,96,.52)'];
 // the hex nearest a map point, using the grid's own layout
 function nearestHex(px, py) {
@@ -2365,41 +2368,65 @@ function wallAlong(x, pl, ring) {
   x.strokeStyle = INK; x.lineWidth = .5; x.stroke(merlons);
 }
 // fields: a grid of strip fields aligned with the town, filled ring by ring outside its built area
+// the land register: a coarse grid of who has claimed the ground, rebuilt each time the overlay is drawn.
+// Houses claim their ground first, then fields, largest town first, so nothing is laid on top of anything else.
+const REG = 1.2, FIELD = 6;
+let register = null, regW = 0, regH = 0;
+function resetRegister() {
+  regW = Math.ceil(MW / REG); regH = Math.ceil(MH / REG);
+  if (!register || register.length !== regW * regH) register = new Uint8Array(regW * regH); else register.fill(0);
+}
+const regAt = (px, py) => { const i = Math.floor(px / REG), j = Math.floor(py / REG); return i < 0 || j < 0 || i >= regW || j >= regH ? -1 : j * regW + i; };
+function claimDisc(px, py, r) {
+  for (let yy = py - r; yy <= py + r; yy += REG) for (let xx = px - r; xx <= px + r; xx += REG) { const k = regAt(xx, yy); if (k >= 0) register[k] = 1; }
+}
+function claimTown(t) {
+  if (t.ruined) return;
+  const pl = townPlan(t, builtCount(t.pop));
+  for (const sl of occupied(pl, builtCount(t.pop))) claimDisc(sl.x, sl.y, 2.2);
+  claimDisc(pl.h.x, pl.h.y, 4.5);                                  // the square and the temple
+}
+// fields: strip fields on the town's own grid, only on free ground in the town's own realm, nearest first
 function drawFields(x, t) {
   if (t.ruined || t.pop < .4) return;
-  const pl = townPlan(t, builtCount(t.pop)), live = occupied(pl, builtCount(t.pop));
-  let reach = 0; for (const sl of live) reach = Math.max(reach, sl.cheb);
-  const vr = townRadius(t.pop) + BLOCK * 6;
-  if (pl.h.x + vr < -ox / scale || pl.h.x - vr > (viewW - ox) / scale || pl.h.y + vr < -oy / scale || pl.h.y - vr > (viewH - oy) / scale) return;
-  const f = owner[t.i] >= 0 ? factions[owner[t.i]] : null, tints = f && f.golden > tick ? FIELD_LUSH : FIELD_TINTS;
-  const want = Math.round(clamp(4 + t.pop * 4, 4, 160)), rr = mulberry32(pl.rr), cells = [];
-  const fr = reach + 3 + Math.ceil(Math.sqrt(want / 4));
-  for (let i = -fr; i <= fr; i++) for (let j = -fr; j <= fr; j++) {
-    const ring = Math.max(Math.abs(i), Math.abs(j)) - reach; if (ring < 1) continue;
-    cells.push({ i, j, d: ring + Math.hypot(i, j) * .05 });
+  const o = owner[t.i]; if (o < 0) return;
+  const pl = townPlan(t, builtCount(t.pop)), f = factions[o], tints = f.golden > tick ? FIELD_LUSH : FIELD_TINTS;
+  const want = Math.round(clamp(5 + Math.pow(t.pop, .8) * 3.5, 5, 70)), rr = mulberry32(pl.rr);
+  const reach = townRadius(t.pop), fr = Math.ceil((reach + 6 + Math.sqrt(want) * FIELD * 1.4) / FIELD);
+  const vr = fr * FIELD + 10;
+  if (pl.h.x + vr < -ox / scale || pl.h.x - vr > (viewW - ox) / scale || pl.h.y + vr < -oy / scale || pl.h.y - vr > (viewH - oy) / scale) {
+    // off screen: still claim the ground, so neighbours on screen leave it alone
   }
+  const cells = [];
+  for (let i = -fr; i <= fr; i++) for (let j = -fr; j <= fr; j++) cells.push({ i, j, d: Math.hypot(i, j) + rr() * .3 });
   cells.sort((p, q) => p.d - q.d);
   const byTint = tints.map(() => new Path2D()), edges = new Path2D(), furrows = new Path2D(); let n = 0;
+  const w = FIELD / 2 - .35;
   for (const cell of cells) {
     if (n >= want) break;
-    const [cx, cy] = pl.toW(cell.i * BLOCK, cell.j * BLOCK);
-    if (!onLand(cx, cy)) continue;
-    const hx = hexes[nearestHex(cx, cy)]; if (hx && hx.terrain === 'mountain') continue;
+    const cu = cell.i * FIELD, cv = cell.j * FIELD;
+    // the whole field must be free, on land, in this realm and not on a mountain
+    const q = w - .3, probe = [];
+    for (const u of [-q, 0, q]) for (const v of [-q, 0, q]) probe.push(pl.toW(cu + u, cv + v));
+    if (probe.some(([px, py]) => { const k = regAt(px, py); return k < 0 || register[k] || !onLand(px, py); })) continue;
+    if (probe.some(([px, py]) => { const hx = hexes[nearestHex(px, py)]; return !hx || owner[hx.i] !== o || hx.terrain === 'mountain'; })) continue;
+    // claim the field's ground, slightly inset so the next field in the row still fits
+    for (let u = -q; u <= q + .01; u += REG * .8) for (let v = -q; v <= q + .01; v += REG * .8) { const k = regAt(...pl.toW(cu + u, cv + v)); if (k >= 0) register[k] = 1; }
     n++;
-    // three strips per field, the strips running one way or the other in alternate fields
-    const along = (cell.i + cell.j) % 2 === 0, inset = .5, w = BLOCK / 2 - inset, strip = (2 * w) / 3;
+    const along = (cell.i + cell.j) % 2 === 0, strip = (2 * w) / 3;
     for (let k = 0; k < 3; k++) {
-      const a0 = -w + k * strip + .15, a1 = a0 + strip - .3;
-      const pts = (along ? [[a0, -w], [a1, -w], [a1, w], [a0, w]] : [[-w, a0], [w, a0], [w, a1], [-w, a1]]).map(([u, v]) => pl.toW(cell.i * BLOCK + u, cell.j * BLOCK + v));
+      const a0 = -w + k * strip + .12, a1 = a0 + strip - .24;
+      const pts = (along ? [[a0, -w], [a1, -w], [a1, w], [a0, w]] : [[-w, a0], [w, a0], [w, a1], [-w, a1]]).map(([u, v]) => pl.toW(cu + u, cv + v));
       polyPath(byTint[Math.floor(rr() * tints.length)], pts); polyPath(edges, pts);
-      const m = (a0 + a1) / 2, [p0, p1] = along ? [[m, -w + .6], [m, w - .6]] : [[-w + .6, m], [w - .6, m]];
-      furrows.moveTo(...pl.toW(cell.i * BLOCK + p0[0], cell.j * BLOCK + p0[1])); furrows.lineTo(...pl.toW(cell.i * BLOCK + p1[0], cell.j * BLOCK + p1[1]));
+      const m = (a0 + a1) / 2, [p0, p1] = along ? [[m, -w + .4], [m, w - .4]] : [[-w + .4, m], [w - .4, m]];
+      furrows.moveTo(...pl.toW(cu + p0[0], cv + p0[1])); furrows.lineTo(...pl.toW(cu + p1[0], cv + p1[1]));
     }
   }
+  t.fieldsShown = n; t.fieldsWanted = want;
   x.save();
   tints.forEach((col, i) => { x.fillStyle = col; x.fill(byTint[i]); });
-  x.strokeStyle = 'rgba(90,70,40,.4)'; x.lineWidth = .3; x.stroke(edges);
-  x.strokeStyle = 'rgba(90,70,40,.3)'; x.lineWidth = .3; x.stroke(furrows);
+  x.strokeStyle = 'rgba(90,70,40,.4)'; x.lineWidth = .25; x.stroke(edges);
+  x.strokeStyle = 'rgba(90,70,40,.3)'; x.lineWidth = .25; x.stroke(furrows);
   x.restore();
 }
 function cityWall(x, pl, count, m) {
