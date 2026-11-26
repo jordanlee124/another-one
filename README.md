@@ -40,7 +40,7 @@ Open `index.html` in a browser. There is no build step and nothing to install. T
 
 **Only what matters reaches the chronicle.** Every event is recorded in the history of the realms involved. The main chronicle keeps only events touching realms that hold a meaningful share of the land. The biggest moments (a sacked capital, a betrayal, the fall of an empire) are also written onto the map beside where they happened, and fade over ten years.
 
-**It keeps time while you're away.** The world saves to the browser every few seconds. Reopening the page resumes it exactly: the random number generator's state is saved too, so a resumed world produces the same history as one that never stopped. Up to 200 years that passed while the page was closed are replayed in about a second, then summarised.
+**It keeps time while you're away.** The world saves to the browser every few seconds. Reopening the page resumes it exactly: the random number generator's state is saved too, so a resumed world produces the same history as one that never stopped. Up to 200 years that passed while the page was closed are played out on the map a slice at a time, with a progress bar, so the page stays responsive; then they are summarised. Closing the page mid-way keeps the remaining years owed.
 
 ![The "While you were away" summary after fifteen minutes away](docs/away.jpg)
 
