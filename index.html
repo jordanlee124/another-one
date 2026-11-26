@@ -1344,12 +1344,12 @@ function disbandWar(w) {
 }
 const warById = id => wars.find(w => w.id === id);
 // the next step toward the nearest enemy province or army, over land and sea lanes the army may cross
-function hostStep(a, w, enemy, targets) {
+function hostStep(a, w, enemy, isGoal) {
   const f = factions[a.f], ok = i => { const o = owner[i]; return hexes[i].land && (o === a.f || o === enemy || o < 0 || f.allies.has(o)); };
   const prev = new Int32Array(hexes.length).fill(-1), q = [a.h]; prev[a.h] = a.h;
   for (let k = 0; k < q.length && k < 1200; k++) {
     const c = q[k];
-    if (c !== a.h && (owner[c] === enemy || targets.has(c))) { let s = c; while (prev[s] !== a.h) s = prev[s]; return s; }
+    if (c !== a.h && isGoal(c)) { let s = c; while (prev[s] !== a.h) s = prev[s]; return s; }
     for (const n of hexes[c].nb) if (prev[n] < 0 && ok(n)) { prev[n] = c; q.push(n); }
   }
   return -1;
@@ -1368,8 +1368,15 @@ function hostsTick() {
     const foe = (byWar.get(a.w) || []).find(e => !e.gone && e.f === enemy && e.fightT !== tick && Math.hypot(hexes[e.h].x - me.x, hexes[e.h].y - me.y) <= NEAR);
     if (foe) { pitchedBattle(a, foe, w); continue; }
     a.foe = -1;
-    // in enemy land: besiege the province; walls and capitals hold out longer
-    if (owner[a.h] === enemy) {
+    // strategy: a realm that is invaded, or clearly outnumbered, defends its own land before it attacks
+    const side = byWar.get(a.w) || [], foes = side.filter(e => e.f === enemy && !e.gone);
+    const mine = side.filter(e => e.f === a.f && !e.gone).reduce((n, e) => n + e.str, 0), theirs = foes.reduce((n, e) => n + e.str, 0);
+    const lost = new Set((w.lost && w.lost[a.f]) || []);
+    const invaders = foes.filter(e => owner[e.h] === a.f || lost.has(e.h));
+    const defend = invaders.length > 0 || mine < theirs * .85;
+    a.mode = defend ? 'defend' : 'attack';
+    // in enemy land: besiege the province (a defender only besieges what was taken from it)
+    if (owner[a.h] === enemy && (!defend || lost.has(a.h))) {
       const town = townAt(a.h), garrison = 260 * me.def * (a.h === E.capital ? 3 : 1) * (town && town.pop >= CITY ? 2.2 : 1) * (.6 + E.traits.caut * .8);
       if (R() < .75 * a.str / (a.str + garrison)) {
         takeProvince(a, w, E, me);
@@ -1382,9 +1389,23 @@ function hostsTick() {
       }
       a.str *= .996; continue;                              // the toll of campaigning far from home
     }
-    if (tick - a.moveT < MOVE_TICKS) continue;
-    const targets = new Set((byWar.get(a.w) || []).filter(e => e.f === enemy && !e.gone).map(e => e.h));
-    const nx = hostStep(a, w, enemy, targets);
+    if (tick - a.moveT < MOVE_TICKS) {
+      if (owner[a.h] === a.f && a.str < a.start && f.men > 0) { const add = Math.min(f.men, a.start * .03); a.str += add; f.men -= add; }
+      continue;
+    }
+    let nx = -1;
+    if (defend) {
+      // hunt the invaders first, then win back lost provinces, then hold the capital
+      const inv = new Set(invaders.map(e => e.h)), back = new Set([...lost].filter(i => owner[i] === enemy));
+      if (inv.size) nx = hostStep(a, w, enemy, c => inv.has(c));
+      if (nx < 0 && back.size) nx = hostStep(a, w, enemy, c => back.has(c));
+      if (nx < 0 && !inv.size && !back.size && mine >= theirs * .85) nx = hostStep(a, w, enemy, c => owner[c] === enemy);
+      if (nx < 0 && a.h !== f.capital && owner[f.capital] === a.f) nx = hostStep(a, w, enemy, c => c === f.capital);
+    } else {
+      // on the offensive: strike the enemy's armies if any are near, otherwise its provinces
+      const near = new Set(foes.filter(e => Math.hypot(hexes[e.h].x - me.x, hexes[e.h].y - me.y) < 140).map(e => e.h));
+      nx = hostStep(a, w, enemy, c => near.has(c) || owner[c] === enemy);
+    }
     if (nx >= 0) { a.from = a.h; a.h = nx; a.moveT = tick; }
     // resting in friendly land refills the ranks from the realm's manpower
     if (owner[a.h] === a.f && a.str < a.start && f.men > 0) { const add = Math.min(f.men, a.start * .03); a.str += add; f.men -= add; }
@@ -1401,8 +1422,10 @@ function hostsTick() {
 function pitchedBattle(a, b, w) {
   const A = factions[a.f], B = factions[b.f], ha = hexes[a.h], hb = hexes[b.h];
   // each side's losses: the enemy's numbers, the luck of the day, its general, and the ground it fights from
-  const la = Math.min(a.str, b.str * .07 * (.6 + R() * .8) * (.8 + B.ruler.ability * .4) / ha.def);
-  const lb = Math.min(b.str, a.str * .07 * (.6 + R() * .8) * (.8 + A.ruler.ability * .4) / hb.def);
+  // home ground: an army fighting on its own land knows the country and has its people behind it
+  const homeA = owner[ha.i] === a.f ? 1.25 : 1, homeB = owner[hb.i] === b.f ? 1.25 : 1;
+  const la = Math.min(a.str, b.str * .07 * (.6 + R() * .8) * (.8 + B.ruler.ability * .4) / (ha.def * homeA));
+  const lb = Math.min(b.str, a.str * .07 * (.6 + R() * .8) * (.8 + A.ruler.ability * .4) / (hb.def * homeB));
   a.str -= la; b.str -= lb; a.fightT = b.fightT = tick; a.foe = b.id; b.foe = a.id;
   a.losses += la; b.losses += lb; a.kills += lb; b.kills += la;
   const mx = (ha.x + hb.x) / 2, my = (ha.y + hb.y) / 2;
@@ -1429,6 +1452,8 @@ function takeProvince(a, w, Y, t) {
   {
     {
       owner[t.i] = X.id; t.lastCap = tick; w[key]++; X.ruler.gained++; Y.ruler.lost++; dirty = true;
+      w.lost = w.lost || {}; (w.lost[Y.id] = w.lost[Y.id] || []).push(t.i);
+      if (w.lost[X.id]) w.lost[X.id] = w.lost[X.id].filter(i => i !== t.i);
       addPuff(t);
       w.hot = w.hot || {}; w.hot[t.i] = (w.hot[t.i] || 0) + 1;
       const town = townAt(t.i); if (town) sackTown(town, X, Y);
