@@ -274,7 +274,7 @@ function warName(B) {
 // ---------- world state ----------
 let seed, worldName, gw, gh, F, thr, hexes, land, landCount, rivers, owner, distArr;
 let innerSea, archetype, features, lanes, seaBoxes = [], COLS, ROWS, X0, Y0, gOff, gHex, gW, liveFields, liveBorders, snapFields, snapBorders;
-let towns, roads, battlefields, factions, wars, chron, eras, ruins, notes, tick, collapse, lastWarYear;
+let hosts = [], warSeq = 0, hostSeq = 0, towns, roads, battlefields, factions, wars, chron, eras, ruins, notes, tick, collapse, lastWarYear;
 let paperC, inkC, washC, washTmp, landBig, snapWashC, labels, snapLabels;
 let labelBoxes = [], dirty = true, ovDirty = true, follow = null, viewEra = null, ovC;
 
@@ -900,7 +900,7 @@ function newFaction(kind, capital, parent) {
   f.gov = kind === 'horde' ? 'horde' : parent && parent.gov === 'republic' && kind === 'rebel' ? 'republic' : 'kingdom';
   f.house = f.gov === 'kingdom' || f.gov === 'horde' ? newHouse(kind === 'horde' ? 'clan' : null) : null;
   f.faith = kind === 'horde' ? steppeFaith() : faithOf[capital] >= 0 ? faithOf[capital] : parent ? parent.faith : faiths.length ? 0 : newFaith();
-  f.gold = parent ? 0 : 5; f.peaceSince = year(); f.golden = 0; f.bankrupt = 0; f.revolYear = -99;
+  f.men = 0; f.gold = parent ? 0 : 5; f.peaceSince = year(); f.golden = 0; f.bankrupt = 0; f.revolYear = -99;
   f.ruler = newRuler(f, kind === 'realm' ? undefined : rnd(25, 45));
   factions.push(f);
   seatTown(f);
@@ -933,8 +933,9 @@ const warBetween = (a, b) => wars.find(w => (w.a === a.id && w.b === b.id) || (w
 function declareWar(X, Y, name, quiet) {
   if (X === Y || !X.alive || !Y.alive || warBetween(X, Y)) return null;
   X.allies.delete(Y.id); Y.allies.delete(X.id);
-  const w = { a: X.id, b: Y.id, name: name || warName(Y), start: tick, sa: Math.max(1, X.size), sb: Math.max(1, Y.size), ga: 0, gb: 0 };
+  const w = { id: ++warSeq, a: X.id, b: Y.id, name: name || warName(Y), start: tick, sa: Math.max(1, X.size), sb: Math.max(1, Y.size), ga: 0, gb: 0 };
   wars.push(w); lastWarYear = year();
+  raiseHosts(X, w); raiseHosts(Y, w);
   if (!quiet) event(`${fn(X)} declares war on ${fn(Y)}. So begins ${w.name}.`, [X, Y], lvl((sig(X, 1.5) || sig(Y, 1.5)) && sig(X, .5) && sig(Y, .5)));
   // allies are called to the banners
   for (const id of [...Y.allies]) {
@@ -947,7 +948,7 @@ function declareWar(X, Y, name, quiet) {
 }
 function endWar(w) {
   wars.splice(wars.indexOf(w), 1);
-  markBattlefield(w);
+  disbandWar(w);
   const A = factions[w.a], B = factions[w.b];
   if (!A.alive || !B.alive) return;
   const until = tick + 12 * rnd(8, 20);
@@ -1193,7 +1194,7 @@ function settlements() {
     if (now !== was && f) {
       dirty = true;
       if (now === 'city' && was === 'town') event(`${t.name} in ${fn(f)} raises its walls: a town no longer, but a city.`, [f], 'minor');
-      if (now === 'great' && was === 'city') event(`${t.name} in ${fn(f)} has grown into a great city, its suburbs spilling far beyond the old walls.`, [f], lvl(sig(f)));
+      if (now === 'great' && was === 'city') event(`${t.name} in ${fn(f)} has grown into a great city, its suburbs spilling far beyond the old walls.`, [f], 'minor');
       if (now === 'metropolis' && !t.metro) {
         t.metro = true;
         event(`${t.name} in ${fn(f)} becomes a metropolis, the greatest city of its age; a second ring of walls rises around its suburbs.`, [f], 'big');
@@ -1236,9 +1237,9 @@ function sackTown(t, X, Y) {
   const was = kindOf(t);
   t.pop *= .35; dirty = true;
   if (was === 'city' || was === 'great' || was === 'metropolis') {
-    event(`${fn(X)} puts the city of ${t.name} to the torch.`, [X, Y], lvl(sig(Y, .5) || sig(X), 'big'));
+    event(`${fn(X)} puts the city of ${t.name} to the torch.`, [X, Y], lvl(was !== 'city' && sig(Y, 1.5), 'big'));
     note(hexes[t.i], `Here ${t.name} burned`);
-    if (sig(Y, .5) || sig(X)) moment(40, hexes[t.i], `${t.name} Burns`, `put to the torch by ${X.name}`);
+    if (was !== 'city' && sig(Y, 1.5)) moment(40, hexes[t.i], `${t.name} Burns`, `put to the torch by ${X.name}`);
   }
   fires.push({ i: t.i, until: tick + 18 });
   if (t.pop < .2) { t.ruined = true; t.ruinYear = year(); }
@@ -1288,6 +1289,9 @@ function computeStats() {
     const gb = clamp(f.gold / (f.size * 3 + 10), -.3, .25);
     f.power *= (1 + (gb > 0 ? gb * (1 - clamp(share * 2.5, 0, .9)) : gb)) * (f.bankrupt > tick ? .7 : 1);
     if (f.size > f.peak) { f.peak = f.size; f.peakYear = year(); }
+    // manpower: the men a realm can put in the field, recovering slowly in peace and war alike
+    f.menCap = Math.round(f.power * 240 + f.size * 40);
+    f.men = Math.min(f.menCap, (f.men || 0) + f.menCap * .02);
   }
 }
 function relocateCapital(f) {
@@ -1318,22 +1322,112 @@ function expansion() {
   }
 }
 
-function battles() {
-  for (const w of wars.slice()) {
-    const A = factions[w.a], B = factions[w.b];
-    if (!A.alive || !B.alive) continue;
-    attack(A, B, w, 'ga'); attack(B, A, w, 'gb');
+// ---------- armies ----------
+// Conquest happens only where an army stands. Each side of a war raises armies from its manpower; they march
+// across the map, fight the enemy's armies in pitched battles, and besiege and take provinces one by one.
+const MOVE_TICKS = 2, NEAR = SQ3 * HR * 1.15;
+function raiseHosts(f, w) {
+  // a crown facing rebels calls an emergency levy, even if its regular armies are spent
+  const rebel = factions[w.a === f.id ? w.b : w.a];
+  if (f.alive && rebel && rebel.kind === 'rebel' && rebel.parent === f.id && f.men < f.menCap * .3) f.men = f.menCap * .3;
+  if (!f.alive || f.men < 150) return;
+  const k = clamp(1 + Math.floor(f.size / 30), 1, 4), take = f.men * (f.kind === 'horde' ? .95 : .7);
+  f.men -= take;
+  for (let n = 0; n < k; n++) {
+    const str = Math.round(take / k);
+    hosts.push({ id: ++hostSeq, f: f.id, w: w.id, h: f.capital, from: f.capital, moveT: tick, str, start: str, fight: -99, kills: 0, losses: 0, foe: -1 });
   }
 }
-function attack(X, Y, w, key) {
-  const front = X.fronts.get(Y.id); if (!front || !front.length) return;
-  const tries = 1 + Math.floor(front.length / 10);
-  for (let k = 0; k < tries; k++) {
-    const t = hexes[pick(front)];
-    if (owner[t.i] !== Y.id) continue;
-    const px = X.power / Math.pow(Math.max(1, X.nWars), .7), py = Y.power / Math.pow(Math.max(1, Y.nWars), .7);
-    const def = t.def * (t.i === Y.capital ? 1.8 : 1) * (1 + .3 * Y.traits.caut);
-    if (R() < .3 * px / (px + py * def)) {
+function disbandWar(w) {
+  for (const a of hosts) if (a.w === w.id) { const f = factions[a.f]; if (f && f.alive) f.men += a.str * .8; a.gone = true; }
+  hosts = hosts.filter(a => !a.gone);
+}
+const warById = id => wars.find(w => w.id === id);
+// the next step toward the nearest enemy province or army, over land and sea lanes the army may cross
+function hostStep(a, w, enemy, targets) {
+  const f = factions[a.f], ok = i => { const o = owner[i]; return hexes[i].land && (o === a.f || o === enemy || o < 0 || f.allies.has(o)); };
+  const prev = new Int32Array(hexes.length).fill(-1), q = [a.h]; prev[a.h] = a.h;
+  for (let k = 0; k < q.length && k < 1200; k++) {
+    const c = q[k];
+    if (c !== a.h && (owner[c] === enemy || targets.has(c))) { let s = c; while (prev[s] !== a.h) s = prev[s]; return s; }
+    for (const n of hexes[c].nb) if (prev[n] < 0 && ok(n)) { prev[n] = c; q.push(n); }
+  }
+  return -1;
+}
+function hostsTick() {
+  const byWar = new Map();
+  for (const a of hosts) { let m = byWar.get(a.w); if (!m) byWar.set(a.w, m = []); m.push(a); }
+  for (const a of hosts) {
+    const w = warById(a.w), f = factions[a.f];
+    if (!w || !f || !f.alive || a.str < 60) { a.gone = true; continue; }
+    if (a.fightT === tick) continue;                       // already fought this month
+    const enemy = w.a === a.f ? w.b : w.a, E = factions[enemy];
+    if (!E || !E.alive) { a.gone = true; continue; }
+    const me = hexes[a.h];
+    // a pitched battle with any enemy army close by
+    const foe = (byWar.get(a.w) || []).find(e => !e.gone && e.f === enemy && e.fightT !== tick && Math.hypot(hexes[e.h].x - me.x, hexes[e.h].y - me.y) <= NEAR);
+    if (foe) { pitchedBattle(a, foe, w); continue; }
+    a.foe = -1;
+    // in enemy land: besiege the province; walls and capitals hold out longer
+    if (owner[a.h] === enemy) {
+      const town = townAt(a.h), garrison = 260 * me.def * (a.h === E.capital ? 3 : 1) * (town && town.pop >= CITY ? 2.2 : 1) * (.6 + E.traits.caut * .8);
+      if (R() < .75 * a.str / (a.str + garrison)) {
+        takeProvince(a, w, E, me);
+        // the undefended countryside round a fallen province often yields to the army too
+        for (const n of me.nb) {
+          if (owner[n] !== enemy || !hexes[n].land || n === E.capital || (townAt(n) && townAt(n).pop >= TOWN)) continue;
+          if (hosts.some(e => e.f === enemy && !e.gone && e.h === n)) continue;
+          if (R() < .45 * a.str / (a.str + garrison)) takeProvince(a, w, E, hexes[n]);
+        }
+      }
+      a.str *= .996; continue;                              // the toll of campaigning far from home
+    }
+    if (tick - a.moveT < MOVE_TICKS) continue;
+    const targets = new Set((byWar.get(a.w) || []).filter(e => e.f === enemy && !e.gone).map(e => e.h));
+    const nx = hostStep(a, w, enemy, targets);
+    if (nx >= 0) { a.from = a.h; a.h = nx; a.moveT = tick; }
+    // resting in friendly land refills the ranks from the realm's manpower
+    if (owner[a.h] === a.f && a.str < a.start && f.men > 0) { const add = Math.min(f.men, a.start * .03); a.str += add; f.men -= add; }
+  }
+  // armies of one realm that meet on the same ground march on as one host
+  const at = new Map();
+  for (const a of hosts) {
+    if (a.gone) continue;
+    const k = a.f + ':' + a.w + ':' + a.h, b = at.get(k);
+    if (b && b.fightT !== tick && a.fightT !== tick) { b.str += a.str; b.start += a.start; a.gone = true; } else if (!b) at.set(k, a);
+  }
+  hosts = hosts.filter(a => !a.gone);
+}
+function pitchedBattle(a, b, w) {
+  const A = factions[a.f], B = factions[b.f], ha = hexes[a.h], hb = hexes[b.h];
+  // each side's losses: the enemy's numbers, the luck of the day, its general, and the ground it fights from
+  const la = Math.min(a.str, b.str * .07 * (.6 + R() * .8) * (.8 + B.ruler.ability * .4) / ha.def);
+  const lb = Math.min(b.str, a.str * .07 * (.6 + R() * .8) * (.8 + A.ruler.ability * .4) / hb.def);
+  a.str -= la; b.str -= lb; a.fightT = b.fightT = tick; a.foe = b.id; b.foe = a.id;
+  a.losses += la; b.losses += lb; a.kills += lb; b.kills += la;
+  const mx = (ha.x + hb.x) / 2, my = (ha.y + hb.y) / 2;
+  if (!bulk) { battleFx.push({ x: ha.x, y: ha.y, n: Math.round(la), t: performance.now() }, { x: hb.x, y: hb.y, n: Math.round(lb), t: performance.now() }); if (battleFx.length > 40) battleFx.splice(0, battleFx.length - 40); addPuff({ x: mx, y: my }); }
+  for (const [loser, winner, L, W] of [[a, b, A, B], [b, a, B, A]]) {
+    if (loser.str >= Math.max(120, loser.start * .22)) continue;
+    // routed: the survivors scatter home
+    loser.gone = true; if (L.alive) L.men += loser.str * .5;
+    const dead = Math.round(loser.losses + winner.losses);
+    if (dead >= 2500) {
+      const near = towns.filter(t => !t.ruined).sort((p, q) => Math.hypot(hexes[p.i].x - mx, hexes[p.i].y - my) - Math.hypot(hexes[q.i].x - mx, hexes[q.i].y - my))[0];
+      let bname = near && Math.hypot(hexes[near.i].x - mx, hexes[near.i].y - my) < 110 ? `the Battle of ${near.name}` : `the Battle of ${pick(['the Fords', 'the Ridge', 'the Long Field', 'the Marsh', 'the Burnt Mill', 'the Crossroads', 'the Standing Stones', 'the Red Brook'])}`;
+      if (battlefields.some(bf => 'the ' + bf.name === bname)) bname = `the Battle of ${placeName(false)}`;
+      battlefields.push({ x: mx, y: my, name: bname.replace(/^the /, ''), year: year(), war: w.name });
+      if (battlefields.length > 12) battlefields.shift();
+      const big = dead >= 14000 && (sig(W) || sig(L));
+      event(`At ${bname.replace(/^the /, 'the ')} the army of ${fn(W)} routs the host of ${fn(L)}. ${dead.toLocaleString('en')} men lie dead on the field.`, [W, L], lvl(dead >= 9000 && (sig(W) || sig(L)), big ? 'big' : ''));
+      if (big) moment(58, { x: mx, y: my }, bname.replace(/^the /, 'The ').replace(/\bthe\b/g, 'the'), `${W.name} routs ${L.name} · ${dead.toLocaleString('en')} dead`);
+    }
+  }
+}
+function takeProvince(a, w, Y, t) {
+  const X = factions[a.f], key = w.a === a.f ? 'ga' : 'gb';
+  {
+    {
       owner[t.i] = X.id; t.lastCap = tick; w[key]++; X.ruler.gained++; Y.ruler.lost++; dirty = true;
       addPuff(t);
       w.hot = w.hot || {}; w.hot[t.i] = (w.hot[t.i] || 0) + 1;
@@ -1364,7 +1458,7 @@ function revolts() {
   }
   for (const f of al) {
     if (f.size < 10) continue;
-    const m = max.get(f.id); if (!m || m.u < .62 || R() > (m.u - .62) * (f.size / landCount > .3 ? .12 : .04)) continue;
+    const m = max.get(f.id); if (!m || m.u < .62 || R() > (m.u - .62) * (f.size / landCount > .3 ? .1 : .025)) continue;
     revolt(f, m.h, m.u, over.get(f.id));
   }
 }
@@ -1381,7 +1475,7 @@ function revolt(f, seedTile, maxU, over) {
   if (region.length < 4 && distArr[seedTile.i] >= 0) return;
   const r = newFaction('rebel', seedTile.i, f);
   for (const i of region) owner[i] = r.id;
-  r.size = region.length; dirty = true;
+  r.size = region.length; r.men = region.length * 160; dirty = true;
   event(`The far provinces of ${fn(f)}${r.faith !== f.faith ? `, faithful to ${faiths[r.faith].name},` : ''} rise in revolt. ${rulerName(r.ruler)} is acclaimed lord of ${fn(r)}.`, [f, r], lvl(sig(f, 1.5) && region.length >= 8));
   if (sig(f, 1.5) && region.length >= 8) note(seedTile, `Here ${r.name} rose against ${f.name}`);
   declareWar(r, f, `the Revolt of ${r.name}`, true);
@@ -1453,7 +1547,7 @@ function civilWar(f) {
   const p = newFaction('realm', seat, f);
   let n = 0;
   for (const h of land) if (owner[h.i] === f.id && h.i !== f.capital && dB[h.i] >= 0 && (distArr[h.i] < 0 || dB[h.i] < distArr[h.i])) { owner[h.i] = p.id; n++; }
-  p.size = n; dirty = true;
+  p.size = n; p.men = n * 320; dirty = true;
   const name = `the War of the ${f.name} Succession`;
   event(`The ${f.gov === 'republic' ? 'election' : 'succession'} in ${fn(f)} is disputed. ${rulerName(p.ruler)} seizes the western halls and proclaims ${fn(p)}: ${name} begins.`
     .replace('western', pick(['western', 'eastern', 'northern', 'southern', 'outer'])), [f, p], lvl(sig(f), 'big'));
@@ -1510,7 +1604,10 @@ function diplomacy() {
   for (const w of wars.slice()) {
     const A = factions[w.a], B = factions[w.b];
     const yrs = (tick - w.start) / 12, la = 1 - A.size / w.sa, lb = 1 - B.size / w.sb;
-    if (R() < .05 + yrs * .015 + Math.max(la, lb, 0) * .5) endWar(w);
+    // a crown does not lightly let rebels go: it keeps fighting while it still has armies in the field
+    const rebelWar = (A.kind === 'rebel' && A.parent === B.id) || (B.kind === 'rebel' && B.parent === A.id);
+    const crownHosts = rebelWar && hosts.some(h => h.w === w.id && h.f === (A.kind === 'rebel' ? B.id : A.id));
+    if (R() < (.05 + yrs * .015 + Math.max(la, lb, 0) * .5) * (crownHosts ? .3 : 1)) endWar(w);
   }
 }
 
@@ -1535,7 +1632,10 @@ function spawnHorde() {
   if (!edge.length) return;
   const t = pick(edge)[1];
   const h = newFaction('horde', t.i), victims = new Set();
-  for (const i of [t.i, ...t.nb]) if (hexes[i].land) { if (owner[i] >= 0) victims.add(owner[i]); owner[i] = h.id; }
+  // the horde lands on one province with a great host; everything else it must take by the sword
+  if (owner[t.i] >= 0) victims.add(owner[t.i]); owner[t.i] = h.id;
+  for (const i of t.nb) if (hexes[i].land && owner[i] >= 0) victims.add(owner[i]);
+  h.men = 9000 + R() * 7000;
   for (const id of victims) { const v = factions[id]; if (v.alive && owner[v.capital] === h.id) relocateCapital(v); }
   dirty = true;
   event(`From beyond the edge of the map ride ${fn(h)} under ${rulerName(h.ruler)}. The steppe-bells are heard for the first time.`, [h], 'big');
@@ -1567,6 +1667,7 @@ function spawnTribes() {
 }
 function die(f) {
   f.alive = false; f.fell = year();
+  hosts = hosts.filter(a => a.f !== f.id);
   const c = hexes[f.capital];
   ruins.push({ x: c.x, y: c.y, name: f.name, year: year(), peak: f.peak });
   if (ruins.length > 14) ruins.shift();
@@ -1614,7 +1715,7 @@ function simTick() {
   tick++;
   computeStats();
   expansion();
-  battles();
+  hostsTick();
   if (tick % 3 === 0) revolts();
   rulers();
   for (const f of aliveList()) { if (f.plague > 0) f.plague--; if (f.famine > 0) f.famine--; }
@@ -1626,10 +1727,11 @@ function initWorld(s) {
   genWorld(s);
   owner = new Int16Array(hexes.length).fill(-1);
   distArr = new Int16Array(hexes.length).fill(-1);
+  hosts = []; warSeq = 0; hostSeq = 0; battleFx = [];
   towns = []; roads = new Map(); battlefields = []; houses = []; faiths = []; marriages = [];
   faithOf = new Int16Array(hexes.length).fill(-1); faithMode = false; syncFaithButton();
   factions = []; wars = []; chron = []; eras = []; ruins = []; notes = []; tick = 0; collapse = null; lastWarYear = 0;
-  moments = []; momentNow = null; founding = false; follow = null; viewEra = null; labels = []; snapLabels = []; puffs = []; fires = []; armies = new Map();
+  moments = []; momentNow = null; founding = false; follow = null; viewEra = null; labels = []; snapLabels = []; puffs = []; fires = []; battleFx = [];
   document.getElementById('chron').innerHTML = '';
   document.getElementById('banner').hidden = true;
   renderLandMask(); renderPaper(); renderInk(); buildGridWeights();
@@ -1681,13 +1783,13 @@ function newWorld(s) {
 // ---------- saving & resuming ----------
 // The world lives in this browser's storage. Terrain is rebuilt from the seed; everything
 // that happened since is saved, and time that passed while the page was closed is replayed.
-const SAVE_KEY = 'ledger-of-crowns-v3', PREV_KEY = 'ledger-of-crowns-v3-set-aside', MAX_CATCHUP_YEARS = 200;
+const SAVE_KEY = 'ledger-of-crowns-v4', PREV_KEY = 'ledger-of-crowns-v4-set-aside', MAX_CATCHUP_YEARS = 200;
 const b64 = a => { const u = new Uint8Array(a.buffer, a.byteOffset, a.byteLength); let str = ''; for (let i = 0; i < u.length; i += 0x8000) str += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(str); };
 const unb64 = str => { const bin = atob(str), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return new Int16Array(u.buffer); };
 function packWorld(maxSnaps) {
   const now = year();
   return {
-    v: 3, seed, rs, tick, savedAt: Date.now(), paused, speed, follow, worldName, founding,
+    v: 4, seed, rs, tick, savedAt: Date.now(), paused, speed, follow, worldName, founding,
     owner: b64(owner), caps: land.filter(h => tick - h.lastCap < 36).map(h => [h.i, h.lastCap]),
     factions: factions.map(f => {
       const { fronts, wildFront, allies, truce, log, rulers, ...rest } = f;
@@ -1699,7 +1801,7 @@ function packWorld(maxSnaps) {
     chron: chron.slice(-400), ruins, notes, collapse, lastWarYear, towns, roads: [...roads], battlefields,
     eras: eras.map((e, k) => ({ name: e.name, kind: e.kind, start: e.start,
       snap: e.snap && k >= eras.length - maxSnaps ? { owner: b64(e.snap.owner), info: [...e.snap.info] } : null })),
-    usedNames: [...usedNames], usedWars: [...usedWars], houses, faiths, marriages, faithOf: b64(faithOf),
+    usedNames: [...usedNames], usedWars: [...usedWars], houses, faiths, marriages, faithOf: b64(faithOf), hosts, warSeq, hostSeq,
   };
 }
 function saveWorld() {
@@ -1709,7 +1811,7 @@ function saveWorld() {
   }
 }
 function loadSave() {
-  try { const raw = localStorage.getItem(SAVE_KEY); const sv = raw && JSON.parse(raw); return sv && sv.v === 3 ? sv : null; } catch (e) { return null; }
+  try { const raw = localStorage.getItem(SAVE_KEY); const sv = raw && JSON.parse(raw); return sv && sv.v === 4 ? sv : null; } catch (e) { return null; }
 }
 function restoreWorld(sv) {
   initWorld(sv.seed);
@@ -1721,6 +1823,7 @@ function restoreWorld(sv) {
   wars = sv.wars; chron = sv.chron; ruins = sv.ruins; notes = (sv.notes || []).map(({ q, box, ...n }) => n); collapse = sv.collapse; lastWarYear = sv.lastWarYear;
   eras = sv.eras.map(e => ({ ...e, snap: e.snap ? { owner: unb64(e.snap.owner), info: new Map(e.snap.info) } : null }));
   usedNames = new Set(sv.usedNames); usedWars = new Map(sv.usedWars);
+  hosts = sv.hosts; warSeq = sv.warSeq; hostSeq = sv.hostSeq;
   houses = sv.houses; faiths = sv.faiths; marriages = sv.marriages; faithOf.set(unb64(sv.faithOf));
   for (const e of chron.slice(-250)) pushChronDom(e);
   speed = sv.speed || 1; document.getElementById('speed').value = String(speed);
@@ -1973,7 +2076,7 @@ function noteCorner(x, n) {
 }
 // ---------- animation: armies, battle smoke, burning capitals, plague, ships ----------
 const reduceMotion = (() => { try { return matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) { return false; } })();
-let bulk = false, puffs = [], fires = [], fleet = [], armies = new Map(), lastAnimReal = 0, lastAnimSim = 0, animFrame = 0;
+let battleFx = [], bulk = false, puffs = [], fires = [], fleet = [], lastAnimReal = 0, lastAnimSim = 0, animFrame = 0;
 const PUFF_MS = 1100;
 function addPuff(h) {
   if (reduceMotion || bulk) return;   // no smoke for years simulated in a blink
@@ -2005,23 +2108,34 @@ function drawAnim(x, now) {
     }
     ship(x, sh.x, sh.y + Math.sin(now / 650 + sh.id) * .8, sh.dir);
   }
-  // armies march from their capital to the front, then hold it
-  for (const w of wars) {
-    if (!w.mark) continue;
-    const pa = hexes[w.mark.a], pb = hexes[w.mark.b], mx = (pa.x + pb.x) / 2, my = (pa.y + pb.y) / 2;
-    for (const [fid, p] of [[w.a, pa], [w.b, pb]]) {
-      const f = factions[fid]; if (!f || !f.alive) continue;
-      const key = `${w.start}:${w.a}:${w.b}:${fid}`, tx = mx + (p.x - mx) * .85, ty = my + (p.y - my) * .85;
-      let a = armies.get(key);
-      if (!a) { const c = hexes[f.capital]; a = { x: c.x, y: c.y }; armies.set(key, a); }
-      const dx = tx - a.x, dy = ty - a.y, d = Math.hypot(dx, dy), step = reduceMotion ? d : dtSim * 10;
-      a.moving = d > step + .5;
-      if (a.moving) { a.x += dx / d * step; a.y += dy / d * step; } else { a.x = tx; a.y = ty; }
-      a.frame = animFrame;
-      drawArmy(x, a, f.color, now);
-    }
+  // armies: drawn where they stand, sliding between provinces as they march; size follows their numbers
+  const simT = tick + acc, sprites = [];
+  for (const h of hosts) {
+    const f = factions[h.f]; if (!f || !f.alive) continue;
+    const A = hexes[h.from], B = hexes[h.h], k = reduceMotion ? 1 : clamp((simT - h.moveT) / MOVE_TICKS, 0, 1);
+    const px = A.x + (B.x - A.x) * k, py = A.y + (B.y - A.y) * k;
+    // one realm's armies standing together are shown as one
+    const same = sprites.find(sp => sp.f === h.f && Math.hypot(sp.x - px, sp.y - py) < 6);
+    if (same) { same.str += h.str; same.fighting = same.fighting || tick - h.fightT < 2; continue; }
+    sprites.push({ f: h.f, x: px, y: py, moving: k < 1, str: h.str, fighting: tick - h.fightT < 2 });
   }
-  for (const [k, a] of armies) if (a.frame !== animFrame) armies.delete(k);
+  // opposing armies close together are drawn apart, so both banners and numbers stay readable
+  for (let pass = 0; pass < 2; pass++) for (let i = 0; i < sprites.length; i++) for (let j = i + 1; j < sprites.length; j++) {
+    const a = sprites[i], b = sprites[j], d = Math.hypot(b.x - a.x, b.y - a.y), want = 24;
+    if (d >= want) continue;
+    const ux = d > .1 ? (b.x - a.x) / d : 1, uy = d > .1 ? (b.y - a.y) / d : 0, push = (want - d) / 2;
+    a.x -= ux * push; a.y -= uy * push; b.x += ux * push; b.y += uy * push;
+  }
+  for (const sp of sprites) drawArmy(x, sp, factions[sp.f].color, now);
+  // casualties float up from each army in a battle
+  battleFx = battleFx.filter(fx => now - fx.t < 1600);
+  x.save(); x.textAlign = 'center'; x.font = 'bold 11px "IM Fell English", Georgia, serif';
+  for (const fx of battleFx) {
+    const age = (now - fx.t) / 1600; if (fx.n < 1) continue;
+    x.globalAlpha = 1 - age; x.lineWidth = 3; x.strokeStyle = 'rgba(236,222,186,.9)';
+    const txt = '−' + fx.n.toLocaleString('en'); x.strokeText(txt, fx.x, fx.y - 30 - age * 18); x.fillStyle = '#8a1e14'; x.fillText(txt, fx.x, fx.y - 30 - age * 18);
+  }
+  x.restore();
   // burning capitals
   fires = fires.filter(fr => fr.until > tick);
   for (const fr of fires) {
@@ -2071,16 +2185,27 @@ function drawAnim(x, now) {
   x.restore();
 }
 function drawArmy(x, a, color, now) {
-  x.save(); x.translate(a.x, a.y); x.scale(1.7, 1.7);
-  x.strokeStyle = INK; x.lineWidth = 1;
+  // bigger armies carry a bigger banner and more men in the ranks
+  const sc = clamp(.9 + Math.sqrt(a.str / 1500) * .55, .9, 2.8), ranks = clamp(Math.round(Math.sqrt(a.str / 250)), 1, 9);
+  x.save(); x.translate(a.x, a.y); x.scale(sc, sc);
+  x.strokeStyle = INK; x.lineWidth = .9;
   x.beginPath(); x.moveTo(0, 3); x.lineTo(0, -12); x.stroke();
   const wave = a.moving && !reduceMotion ? Math.sin(now / 140) * 1.2 : 0;
   x.fillStyle = color; x.beginPath(); x.moveTo(0, -12); x.lineTo(8, -10.5 + wave); x.lineTo(0, -7.5); x.closePath(); x.fill(); x.stroke();
   x.fillStyle = INK;
-  for (let k = 0; k < 3; k++) {
-    const bob = a.moving && !reduceMotion ? Math.abs(Math.sin(now / 160 + k * 1.3)) * 1.6 : 0;
-    x.beginPath(); x.arc(-5 + k * 4 + 2, 4 - bob, 1.3, 0, 7); x.fill();
+  const cols = Math.min(ranks, 5);
+  for (let k = 0; k < ranks; k++) {
+    const r = Math.floor(k / cols), c = k % cols, bob = a.moving && !reduceMotion ? Math.abs(Math.sin(now / 160 + k * 1.3)) * 1.4 : 0;
+    const jit = a.fighting && !reduceMotion ? Math.sin(now / 60 + k) * .6 : 0;
+    x.beginPath(); x.arc(-((cols - 1) * 1.6) + c * 3.2 + jit, 4.2 + r * 2.8 - bob, 1.1, 0, 7); x.fill();
   }
+  if (a.fighting) swords(x, 9, -2);
+  x.restore();
+  // the army's numbers beneath it
+  x.save(); x.font = `${Math.round(9 + sc * 1.5)}px "IM Fell English", Georgia, serif`; x.textAlign = 'center';
+  const txt = a.str >= 1000 ? (a.str / 1000).toFixed(a.str >= 10000 ? 0 : 1) + 'k' : String(Math.round(a.str));
+  const ty = a.y + 4.2 * sc + Math.ceil(ranks / 5) * 2.8 * sc + 9;
+  x.lineWidth = 2.5; x.strokeStyle = 'rgba(236,222,186,.85)'; x.strokeText(txt, a.x, ty); x.fillStyle = a.fighting ? '#8a1e14' : INK; x.fillText(txt, a.x, ty);
   x.restore();
 }
 // ---------- big moments: the map stops to mark what matters ----------
@@ -2178,18 +2303,6 @@ function drawLiveMarks(x) {
       x.stroke();
     }
     x.globalAlpha = 1;
-    // crossed swords on each active front
-    for (const w of wars) {
-      const A = factions[w.a], B = factions[w.b], fr = A.fronts.get(B.id);
-      if (!fr || !fr.length) continue;
-      if (!w.mark || tick - w.markT > 30 || own[w.mark.a] !== A.id || own[w.mark.b] !== B.id) {
-        const b = fr[Math.floor(Math.random() * fr.length)], a = hexes[b].nb.find(n => own[n] === A.id);
-        if (a == null) continue;
-        w.mark = { a, b }; w.markT = tick;
-      }
-      const pa = hexes[w.mark.a], pb = hexes[w.mark.b];
-      swords(x, (pa.x + pb.x) / 2, (pa.y + pb.y) / 2);
-    }
   }
 }
 function drawRoads(x) {
