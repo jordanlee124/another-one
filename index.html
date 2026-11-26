@@ -279,7 +279,7 @@ function warName(B) {
 // ---------- world state ----------
 let seed, worldName, gw, gh, F, thr, hexes, land, landCount, rivers, owner, distArr;
 let innerSea, archetype, features, lanes, seaBoxes = [], COLS, ROWS, X0, Y0, gOff, gHex, gW, liveFields, liveBorders, snapFields, snapBorders;
-let hosts = [], warSeq = 0, hostSeq = 0, towns, roads, battlefields, factions, wars, chron, eras, ruins, notes, tick, collapse, lastWarYear;
+let occ = null, hosts = [], warSeq = 0, hostSeq = 0, towns, roads, battlefields, factions, wars, chron, eras, ruins, notes, tick, collapse, lastWarYear;
 let paperC, inkC, washC, washTmp, landBig, snapWashC, labels, snapLabels;
 let labelBoxes = [], dirty = true, ovDirty = true, follow = null, viewEra = null, ovC;
 
@@ -827,7 +827,8 @@ function renderWash(target, own, fields, colorOf, rects = null) {
   t.drawImage(washSmall, -GS * OS / 2, -GS * OS / 2, gw * GS * OS, gh * GS * OS);
   // pigment pools at the edge of each wash, as real watercolour does
   t.setTransform(OS, 0, 0, OS, 0, 0); t.lineWidth = 4; t.lineCap = 'round'; t.lineJoin = 'round'; t.globalAlpha = .75;
-  for (const [id] of fields) { t.strokeStyle = mix(colorOf(id), '#2a1d12', .3); strokeSegs(t, realmContour(fields, id)); }
+  // in a fixed order, so where two realms' edges overlap the result never depends on what changed elsewhere
+  for (const id of [...fields.keys()].sort((p, q) => p - q)) { t.strokeStyle = mix(colorOf(id), '#2a1d12', .3); strokeSegs(t, realmContour(fields, id)); }
   t.restore();
   const w = target.getContext('2d');
   w.save(); w.setTransform(1, 0, 0, 1, 0, 0); w.globalCompositeOperation = 'source-over';
@@ -920,7 +921,7 @@ function newFaction(kind, capital, parent) {
   f.gov = kind === 'horde' ? 'horde' : parent && parent.gov === 'republic' && kind === 'rebel' ? 'republic' : 'kingdom';
   f.house = f.gov === 'kingdom' || f.gov === 'horde' ? newHouse(kind === 'horde' ? 'clan' : null) : null;
   f.faith = kind === 'horde' ? steppeFaith() : faithOf[capital] >= 0 ? faithOf[capital] : parent ? parent.faith : faiths.length ? 0 : newFaith();
-  f.men = 0; f.gold = parent ? 0 : 5; f.peaceSince = year(); f.golden = 0; f.bankrupt = 0; f.revolYear = -99;
+  f.men = 0; f.infamy = 0; f.claims = {}; f.tributes = []; f.gold = parent ? 0 : 5; f.peaceSince = year(); f.golden = 0; f.bankrupt = 0; f.revolYear = -99;
   f.ruler = newRuler(f, kind === 'realm' ? undefined : rnd(25, 45));
   factions.push(f);
   seatTown(f);
@@ -949,35 +950,214 @@ function event(text, fs = [], cls = '') {
 }
 
 // ---------- war & diplomacy ----------
-const warBetween = (a, b) => wars.find(w => (w.a === a.id && w.b === b.id) || (w.a === b.id && w.b === a.id));
-function declareWar(X, Y, name, quiet) {
+// Every war is fought over a goal and has two sides, each led by the realm that started or was attacked.
+// Armies occupy provinces; borders move only when a peace treaty says so.
+const sideOf = (w, id) => w.A.includes(id) ? 'A' : w.B.includes(id) ? 'B' : null;
+const foesIn = (w, id) => { const s = sideOf(w, id); return s === 'A' ? w.B : s === 'B' ? w.A : []; };
+const friendsIn = (w, id) => { const s = sideOf(w, id); return s === 'A' ? w.A : s === 'B' ? w.B : []; };
+const warBetween = (a, b) => wars.find(w => (w.A.includes(a.id) && w.B.includes(b.id)) || (w.A.includes(b.id) && w.B.includes(a.id)));
+const ctrl = i => occ[i] >= 0 ? occ[i] : owner[i];          // who holds a province right now
+const townMap = () => { const m = new Map(); for (const t of towns) if (!t.ruined) m.set(t.i, t); return m; };
+// what a province is worth at the peace table: its fields, its town, and above all a capital
+function provVal(h, tm) {
+  const t = tm.get(h.i), o = owner[h.i], f = o >= 0 ? factions[o] : null;
+  return 1 + h.food * .4 + (t ? Math.min(6, t.pop * .4) : 0) + (f && f.capital === h.i ? 5 : 0);
+}
+function goalLabel(hs) {
+  if (!hs.length) return '';
+  const cx = hs.reduce((n, i) => n + hexes[i].x, 0) / hs.length, cy = hs.reduce((n, i) => n + hexes[i].y, 0) / hs.length;
+  const t = towns.filter(t => !t.ruined).sort((p, q) => Math.hypot(hexes[p.i].x - cx, hexes[p.i].y - cy) - Math.hypot(hexes[q.i].x - cx, hexes[q.i].y - cy))[0];
+  return t && Math.hypot(hexes[t.i].x - cx, hexes[t.i].y - cy) < 120 ? `the lands around ${t.name}` : `the ${placeName(false)} Marches`;
+}
+// the reason for a war: lost lands to win back, faithful to free, a border region to seize, tribute, a throne
+function pickGoal(X, Y, type) {
+  const yLand = land.filter(h => owner[h.i] === Y.id), tm = townMap();
+  const claimed = yLand.filter(h => X.claims && X.claims[h.i] && year() - X.claims[h.i] < 100);
+  if (!type) {
+    if (claimed.length) type = 'reconquest';
+    else if (X.faith !== Y.faith && yLand.filter(h => faithOf[h.i] === X.faith).length >= 2 && R() < .6) type = 'holy';
+    else if (X.gov === 'republic' && R() < .6) type = 'tribute';
+    else type = 'border';
+  }
+  let hs = [];
+  if (type === 'reconquest') hs = claimed.map(h => h.i);
+  else if (type === 'holy') hs = yLand.filter(h => faithOf[h.i] === X.faith && h.i !== Y.capital).map(h => h.i);
+  else if (type === 'border') {
+    hs = yLand.filter(h => h.i !== Y.capital && h.nb.some(n => owner[n] === X.id)).sort((p, q) => provVal(q, tm) - provVal(p, tm)).map(h => h.i);
+    if (!hs.length) { const c = hexes[X.capital]; hs = yLand.filter(h => h.i !== Y.capital).sort((p, q) => Math.hypot(p.x - c.x, p.y - c.y) - Math.hypot(q.x - c.x, q.y - c.y)).map(h => h.i); }
+  }
+  if (type === 'holy' && !hs.length) return pickGoal(X, Y, 'border');
+  hs = hs.slice(0, 6);
+  return { type, hexes: hs, label: hs.length ? goalLabel(hs) : '' };
+}
+function goalPhrase(w, X, Y) {
+  const g = w.goal;
+  return g.type === 'border' && g.label ? ` to seize ${g.label}` : g.type === 'reconquest' ? ` to win back ${g.label}` : g.type === 'holy' ? ` to free the faithful of ${faiths[X.faith].name} in ${g.label}`
+    : g.type === 'tribute' ? ' to force it to pay tribute' : g.type === 'throne' ? ' claiming its crown' : '';
+}
+function declareWar(X, Y, name, quiet, goalType) {
   if (X === Y || !X.alive || !Y.alive || warBetween(X, Y)) return null;
   X.allies.delete(Y.id); Y.allies.delete(X.id);
-  const w = { id: ++warSeq, a: X.id, b: Y.id, name: name || warName(Y), start: tick, sa: Math.max(1, X.size), sb: Math.max(1, Y.size), ga: 0, gb: 0 };
+  const goal = pickGoal(X, Y, goalType);
+  // a war is called holy only if it really is fought over the faithful
+  if (!name && goal.type === 'holy') name = `the Holy War against ${Y.name}`;
+  const w = { id: ++warSeq, a: X.id, b: Y.id, A: [X.id], B: [Y.id], goal, name: name || warName(Y), start: tick,
+    killsA: 0, killsB: 0, lossA: 0, lossB: 0, goalT: 0, ga: 0, gb: 0 };
   wars.push(w); lastWarYear = year();
   raiseHosts(X, w); raiseHosts(Y, w);
-  if (!quiet) event(`${fn(X)} declares war on ${fn(Y)}. So begins ${w.name}.`, [X, Y], lvl((sig(X, 1.5) || sig(Y, 1.5)) && sig(X, .5) && sig(Y, .5)));
-  // allies are called to the banners
-  for (const id of [...Y.allies]) {
-    const A = factions[id];
-    if (A.alive && A !== X && !warBetween(A, X) && R() < A.traits.loyal * .85) {
-      declareWar(A, X, w.name, true); event(`Honouring old oaths, ${fn(A)} rides to the aid of ${fn(Y)}.`, [A, Y], lvl(sig(A, 1.5) && sig(Y)));
-    }
+  if (!quiet) event(`${fn(X)} declares war on ${fn(Y)}${goalPhrase(w, X, Y)}. So begins ${w.name}.`, [X, Y], lvl((sig(X, 1.5) || sig(Y, 1.5)) && sig(X, .5) && sig(Y, .5)));
+  // allies are called to the banners, on both sides: the attacked can count on its friends more than the attacker
+  if (w.goal.type !== 'independence' && X.kind !== 'horde') {
+    for (const id of [...Y.allies]) { const A = factions[id]; if (A.alive && !sideOf(w, id) && !X.allies.has(id) && R() < A.traits.loyal * .85) joinWar(w, A, 'B', Y); }
+    for (const id of [...X.allies]) { const A = factions[id]; if (A.alive && !sideOf(w, id) && !Y.allies.has(id) && R() < A.traits.loyal * .45) joinWar(w, A, 'A', X); }
+  } else if (X.kind === 'horde') {
+    for (const id of [...Y.allies]) { const A = factions[id]; if (A.alive && !sideOf(w, id) && R() < A.traits.loyal * .85) joinWar(w, A, 'B', Y); }
   }
   return w;
 }
-function endWar(w) {
+function joinWar(w, A, side, friend) {
+  const foes = side === 'A' ? w.B : w.A;
+  if (foes.some(id => warBetween(A, factions[id]))) return;   // already fighting them in another war
+  (side === 'A' ? w.A : w.B).push(A.id);
+  for (const id of foes) { A.allies.delete(id); factions[id].allies.delete(A.id); }
+  raiseHosts(A, w);
+  event(side === 'B' ? `Honouring old oaths, ${fn(A)} rides to the aid of ${fn(friend)}.` : `${fn(A)} marches beside its ally ${fn(friend)} in ${w.name}.`, [A, friend], lvl(sig(A, 1.5) && sig(friend)));
+}
+// ---------- war score, weariness and the peace table ----------
+// The war score runs from -100 to 100, from the attacking side's point of view: what each side occupies of the
+// other's land (by value), who is winning the battles, and how long the attacker has held its war goal.
+function warScore(w) {
+  const A = new Set(w.A), B = new Set(w.B), tm = townMap();
+  let valA = 0, valB = 0, occA = 0, occB = 0;
+  for (const h of land) {
+    const o = owner[h.i]; if (o < 0) continue;
+    if (B.has(o)) { const v = provVal(h, tm); valB += v; if (A.has(occ[h.i])) occA += v; }
+    else if (A.has(o)) { const v = provVal(h, tm); valA += v; if (B.has(occ[h.i])) occB += v; }
+  }
+  const score = 70 * (occA / Math.max(1, valB) - occB / Math.max(1, valA)) + 25 * (w.killsA - w.killsB) / (w.killsA + w.killsB + 2000) + w.goalT;
+  return { score: clamp(score, -100, 100), valA, valB, occA, occB };
+}
+// how tired a side is of the war: years, the men it has lost, its own land under occupation, an empty treasury
+function weariness(w, side, sc) {
+  const ids = side === 'A' ? w.A : w.B, yrs = (tick - w.start) / 12;
+  const cap = ids.reduce((n, id) => n + (factions[id].alive ? factions[id].menCap || 0 : 0), 1);
+  const occFrac = side === 'A' ? sc.occB / Math.max(1, sc.valA) : sc.occA / Math.max(1, sc.valB);
+  const broke = ids.some(id => factions[id].bankrupt > tick) ? 15 : 0;
+  return clamp(yrs * 5 + (side === 'A' ? w.lossA : w.lossB) / cap * 60 + occFrac * 60 + broke, 0, 100);
+}
+function standing(w, id) {
+  const s = warScore(w).score * (sideOf(w, id) === 'A' ? 1 : -1);
+  return s > 40 ? 'winning decisively' : s > 10 ? 'winning' : s < -40 ? 'losing badly' : s < -10 ? 'losing' : 'evenly matched';
+}
+// each year, every war's leaders weigh the score against their weariness
+function peaceTable() {
+  for (const w of wars.slice()) {
+    if (!wars.includes(w)) continue;
+    const yrs = (tick - w.start) / 12, L = factions[w.a], D = factions[w.b];
+    if (!L.alive || !D.alive) { endWar(w, null); continue; }
+    // hordes don't negotiate: they keep what they take, and ride on once their strength is spent
+    if (L.kind === 'horde' || D.kind === 'horde') {
+      const H = L.kind === 'horde' ? L : D, has = hosts.some(h => h.w === w.id && h.f === H.id);
+      if (R() < (has ? .03 + yrs * .01 : .5)) endWar(w, { white: true });
+      continue;
+    }
+    const sc = warScore(w), S = sc.score, win = S >= 0 ? 'A' : 'B', s = Math.abs(S);
+    const wA = weariness(w, 'A', sc), wB = weariness(w, 'B', sc), loserWear = win === 'A' ? wB : wA, winWear = win === 'A' ? wA : wB;
+    if (s >= 15 && (s >= 75 || loserWear + s >= 90 || (winWear >= 80 && R() < .5))) endWar(w, { win, budget: s });
+    else if (s < 15 && ((wA > 55 && wB > 55) || yrs > 25)) endWar(w, { white: true });
+    else if (yrs > 40) endWar(w, s >= 15 ? { win, budget: s * .7 } : { white: true });
+  }
+}
+// the treaty: the winner takes, up to its war score, what it can hold on to
+function applyTreaty(w, res) {
+  const W = new Set(res.win === 'A' ? w.A : w.B), Ls = new Set(res.win === 'A' ? w.B : w.A);
+  const WL = factions[res.win === 'A' ? w.a : w.b], LL = factions[res.win === 'A' ? w.b : w.a], tm = townMap();
+  let budget = res.budget; const terms = [];
+  if (w.goal.type === 'independence') {
+    const rebel = factions[w.a], crown = factions[w.b];
+    if (res.win === 'B' && budget >= 35) {
+      for (const h of land) if (owner[h.i] === rebel.id) { owner[h.i] = crown.id; occ[h.i] = -1; }
+      rebel.absorbedBy = crown.id; dirty = true; terms.push({ kind: 'crushed', rebel, crown });
+    } else terms.push({ kind: 'independence', rebel, crown });
+    return terms;
+  }
+  // a small realm, beaten and overrun, can be swallowed whole; a won succession war unites two crowns
+  let llVal = 0, llOcc = 0;
+  for (const h of land) if (owner[h.i] === LL.id) { const v = provVal(h, tm); llVal += v; if (W.has(occ[h.i])) llOcc += v; }
+  const union = w.goal.type === 'throne' && res.win === 'A' && budget >= 60;
+  if (union || (LL.size <= Math.max(6, landCount * .04) && budget >= 75 && llOcc / Math.max(1, llVal) >= .6)) {
+    for (const h of land) if (owner[h.i] === LL.id) { owner[h.i] = W.has(occ[h.i]) ? occ[h.i] : WL.id; occ[h.i] = -1; }
+    LL.absorbedBy = WL.id; dirty = true; WL.infamy += union ? 10 : 25;
+    terms.push({ kind: 'annex', by: WL, of: LL, union });
+    return terms;
+  }
+  // a holy war can free the faithful as a realm of their own
+  if (w.goal.type === 'holy' && budget >= 25) {
+    const region = land.filter(h => owner[h.i] === LL.id && h.i !== LL.capital && faithOf[h.i] === WL.faith).map(h => h.i);
+    for (const i of region) occ[i] = -1;
+    if (region.length >= 3) {
+      const seat = region.sort((p, q) => provVal(hexes[q], tm) - provVal(hexes[p], tm))[0];
+      const n = newFaction('realm', seat, LL);
+      for (const i of region) owner[i] = n.id;
+      n.faith = WL.faith; n.size = region.length; n.men = region.length * 200; dirty = true; budget -= 25;
+      ally(n, WL); terms.push({ kind: 'release', from: LL, realm: n, faith: faiths[WL.faith].name });
+    }
+  }
+  // provinces: only those the victors hold, the war's goal first, then the richest; never the loser's capital
+  const valOf = new Map(); for (const h of land) { const o = owner[h.i]; if (Ls.has(o)) valOf.set(o, (valOf.get(o) || 0) + provVal(h, tm)); }
+  const goal = new Set(w.goal.hexes), ceded = new Map();
+  const cands = land.filter(h => Ls.has(owner[h.i]) && W.has(occ[h.i]) && h.i !== factions[owner[h.i]].capital)
+    .sort((p, q) => (goal.has(q.i) - goal.has(p.i)) || provVal(q, tm) - provVal(p, tm));
+  for (const h of cands) {
+    const cost = 100 * provVal(h, tm) / Math.max(1, valOf.get(owner[h.i])) * .9;
+    if (cost > budget) continue;
+    budget -= cost;
+    const to = occ[h.i], from = owner[h.i], key = from + '>' + to;
+    factions[from].claims[h.i] = year();
+    owner[h.i] = to; occ[h.i] = -1; factions[to].infamy += cost * .4;
+    let c = ceded.get(key); if (!c) ceded.set(key, c = { from: factions[from], to: factions[to], n: 0, towns: [] }); c.n++;
+    const t = tm.get(h.i); if (t && t.pop >= TOWN) c.towns.push(t.name);
+  }
+  if (ceded.size) { dirty = true; for (const c of ceded.values()) terms.push({ kind: 'cede', ...c }); }
+  // what remains is paid in gold, as tribute for ten years
+  if (budget >= 6) {
+    const amt = Math.round(budget * .06 * 10) / 10;
+    LL.tributes.push({ to: WL.id, amt, until: year() + 10 }); WL.infamy += budget * .1;
+    terms.push({ kind: 'tribute', from: LL, to: WL, amt });
+  }
+  return terms;
+}
+function treatyText(w, res, terms) {
+  if (!res || res.white) return `${w.name} ends in a white peace. Neither side gains a province.`;
+  const parts = terms.map(t => t.kind === 'cede' ? `${fn(t.from)} cedes ${t.n} province${t.n === 1 ? '' : 's'}${t.towns.length ? ' with ' + t.towns.slice(0, 2).join(' and ') : ''} to ${fn(t.to)}`
+    : t.kind === 'annex' ? (t.union ? `${fn(t.of)} passes to the crown of ${fn(t.by)}` : `${fn(t.of)} is annexed by ${fn(t.by)}`)
+    : t.kind === 'release' ? `the faithful of ${t.faith} in ${fn(t.from)} are freed as ${fn(t.realm)}`
+    : t.kind === 'tribute' ? `${fn(t.from)} pays ${fn(t.to)} a tribute of ${t.amt} gold a year for ten years`
+    : t.kind === 'independence' ? `${fn(t.crown)} recognises the independence of ${fn(t.rebel)}`
+    : `the rebels of ${fn(t.rebel)} are crushed and their lands return to ${fn(t.crown)}`);
+  const tname = `the Treaty of ${placeName(false)}`;
+  return parts.length ? `${w.name} ends with ${tname}: ${parts.join('; ')}.` : `${w.name} ends with ${tname}; ${fn(factions[res.win === 'A' ? w.b : w.a])} acknowledges defeat.`;
+}
+function endWar(w, res) {
+  if (!wars.includes(w)) return;
   wars.splice(wars.indexOf(w), 1);
   disbandWar(w);
-  const A = factions[w.a], B = factions[w.b];
-  if (!A.alive || !B.alive) return;
-  const until = tick + 12 * rnd(8, 20);
-  A.truce.set(B.id, until); B.truce.set(A.id, until);
-  const net = w.ga - w.gb, treaty = `the Treaty of ${placeName(false)}`;
-  if (A.kind === 'rebel' && A.parent === B.id && A.size > 0) event(`${w.name} ends. ${fn(B)} bows to the inevitable and recognises the independence of ${fn(A)}.`, [A, B], lvl(sig(A, .5)));
-  else if (net > 3) event(`${w.name} ends with ${treaty}; ${fn(A)} keeps ${net} provinces wrested from ${fn(B)}.`, [A, B], lvl(net >= 8 && sig(A, .5) && sig(B, .5)));
-  else if (net < -3) event(`${w.name} ends with ${treaty}; ${fn(B)} keeps ${-net} provinces taken from ${fn(A)}.`, [A, B], lvl(net <= -8 && sig(A, .5) && sig(B, .5)));
-  else event(`${w.name} sputters out in exhaustion. Neither ${fn(A)} nor ${fn(B)} gains much.`, [A, B], 'minor');
+  const terms = res && !res.white ? applyTreaty(w, res) : [];
+  // everything still occupied goes back to its owner
+  const A = new Set(w.A), B = new Set(w.B);
+  for (const h of land) { const o = occ[h.i], ow = owner[h.i]; if (o >= 0 && ((A.has(o) && B.has(ow)) || (B.has(o) && A.has(ow)))) occ[h.i] = -1; }
+  const until = tick + 12 * rnd(8, 20) * (res && res.budget > 50 ? 1.5 : 1);
+  for (const a of w.A) for (const b of w.B) { factions[a].truce.set(b, until); factions[b].truce.set(a, until); }
+  if (res === null) return;                                    // a war that simply lapsed, its leaders gone
+  const L = factions[w.a], D = factions[w.b], who = [L, D].filter(f => f.alive);
+  const nProv = terms.reduce((n, t) => n + (t.n || 0), 0), annex = terms.find(t => t.kind === 'annex');
+  const major = (sig(L, .5) && sig(D, .5)) && (nProv >= 4 || annex || terms.some(t => t.kind === 'release' || t.kind === 'crushed'));
+  const big = (annex && sig(annex.of, .5)) || nProv >= 8;
+  event(treatyText(w, res, terms), who, lvl(major || (big && (sig(L) || sig(D))), big ? 'big' : ''));
+  if (big) {
+    const loser = annex ? annex.of : factions[res.win === 'A' ? w.b : w.a];
+    moment(62, hexes[loser.capital], annex ? (annex.union ? 'Two Crowns, One King' : `The End of ${loser.name}`) : 'A Hard Peace', annex ? `${loser.name} is annexed by ${annex.by.name}` : `${loser.name} cedes ${nProv} provinces`);
+  }
 }
 function ally(A, B) {
   if (A.allies.size >= 3 || B.allies.size >= 3) return;
@@ -1102,9 +1282,14 @@ function setGov(f, gov) {
 function wealthYear() {
   const townPop = new Map(), roadN = new Map();
   // a city's tax grows more slowly than the city itself: crowded streets pay less per head
-  for (const t of towns) { if (t.ruined) continue; const o = owner[t.i]; if (o >= 0) townPop.set(o, (townPop.get(o) || 0) + Math.pow(t.pop, .6)); }
+  for (const t of towns) { if (t.ruined || occ[t.i] >= 0) continue; const o = owner[t.i]; if (o >= 0) townPop.set(o, (townPop.get(o) || 0) + Math.pow(t.pop, .6)); }   // an occupied town pays its taxes to no one
   for (const r of roads.values()) { if (!r.used) continue; const o = owner[r.a]; if (o >= 0) roadN.set(o, (roadN.get(o) || 0) + 1); }
   const armyStr = new Map(); for (const h of hosts) armyStr.set(h.f, (armyStr.get(h.f) || 0) + h.str);
+  // tribute owed under peace treaties
+  for (const f of aliveList()) {
+    f.tributes = (f.tributes || []).filter(tr => tr.until > year() && factions[tr.to].alive);
+    for (const tr of f.tributes) { f.gold -= tr.amt; factions[tr.to].gold += tr.amt; }
+  }
   for (const f of aliveList()) {
     const tw = townPop.get(f.id) || 0;
     let income = tw * 1.2 + (roadN.get(f.id) || 0) * .4 + f.size * .05;
@@ -1285,7 +1470,7 @@ function markBattlefield(w) {
 function computeStats() {
   const al = aliveList();
   for (const f of al) { f.size = 0; f.food = 0; f.fronts.clear(); f.wildFront.length = 0; f.nWars = 0; }
-  for (const w of wars) { factions[w.a].nWars++; factions[w.b].nWars++; }
+  for (const w of wars) for (const id of w.A.concat(w.B)) if (factions[id].alive) factions[id].nWars++;
   for (const h of land) {
     const o = owner[h.i]; if (o < 0) continue;
     const f = factions[o]; f.size++; f.food += h.food;
@@ -1294,6 +1479,11 @@ function computeStats() {
       if (on < 0) f.wildFront.push(n);
       else { let a = f.fronts.get(on); if (!a) f.fronts.set(on, a = []); a.push(n); }
     }
+  }
+  for (const h of land) {
+    const o = occ[h.i]; if (o < 0) continue;
+    const O = factions[o], P = owner[h.i] >= 0 ? factions[owner[h.i]] : null;
+    if (!O || !O.alive || !P || P === O || !warBetween(O, P)) occ[h.i] = -1;
   }
   distArr.fill(-1);
   for (const f of al) {
@@ -1314,7 +1504,6 @@ function computeStats() {
     if (f.size > f.peak) { f.peak = f.size; f.peakYear = year(); }
     // manpower: the men a realm can put in the field, recovering slowly in peace and war alike
     f.menCap = Math.round(f.power * 240 + f.size * 40);
-    f.men = Math.min(f.menCap, (f.men || 0) + f.menCap * .02);
   }
 }
 function relocateCapital(f) {
@@ -1367,47 +1556,65 @@ function disbandWar(w) {
 }
 const warById = id => wars.find(w => w.id === id);
 // the next step toward the nearest enemy province or army, over land and sea lanes the army may cross
-function hostStep(a, w, enemy, isGoal) {
-  const f = factions[a.f], ok = i => { const o = owner[i]; return hexes[i].land && (o === a.f || o === enemy || o < 0 || f.allies.has(o)); };
-  const prev = new Int32Array(hexes.length).fill(-1), q = [a.h]; prev[a.h] = a.h;
+// One breadth-first search serves every kind of target an army might want, in order of priority:
+// it returns the first step toward the nearest target of the most important kind that can be reached.
+let bfsPrev = null, bfsSeen = null, bfsStamp = 0;
+function hostStep(a, passable, goals) {
+  if (!bfsPrev || bfsPrev.length !== hexes.length) { bfsPrev = new Int32Array(hexes.length); bfsSeen = new Int32Array(hexes.length); bfsStamp = 0; }
+  const stamp = ++bfsStamp, f = factions[a.f];
+  const ok = i => { const o = owner[i]; return hexes[i].land && (o < 0 || passable.has(o) || f.allies.has(o)); };
+  const found = new Array(goals.length).fill(-1), q = [a.h], first = goals.findIndex(g => g); bfsSeen[a.h] = stamp; bfsPrev[a.h] = a.h;
+  if (first < 0) return -1;
   for (let k = 0; k < q.length && k < 1200; k++) {
     const c = q[k];
-    if (c !== a.h && isGoal(c)) { let s = c; while (prev[s] !== a.h) s = prev[s]; return s; }
-    for (const n of hexes[c].nb) if (prev[n] < 0 && ok(n)) { prev[n] = c; q.push(n); }
+    if (c !== a.h) for (let g = first; g < goals.length; g++) if (found[g] < 0 && goals[g] && goals[g](c)) found[g] = c;
+    if (found[first] >= 0) break;                      // the most important kind of target is found: no need to look further
+    for (const n of hexes[c].nb) if (bfsSeen[n] !== stamp && ok(n)) { bfsSeen[n] = stamp; bfsPrev[n] = c; q.push(n); }
   }
-  return -1;
+  const target = found.find(t => t >= 0);
+  if (target === undefined) return -1;
+  let s = target; while (bfsPrev[s] !== a.h) s = bfsPrev[s];
+  return s;
 }
 function hostsTick() {
+  // the attacker's hold on its war goal counts for more the longer it lasts
+  for (const w of wars) {
+    if (!w.goal.hexes.length) continue;
+    const A = new Set(w.A), held = w.goal.hexes.filter(i => A.has(ctrl(i))).length / w.goal.hexes.length;
+    if (held >= .999) w.goalT = Math.min(25, w.goalT + .25);
+    else if (held === 0 && tick - w.start > 24) w.goalT = Math.max(-15, w.goalT - .1);
+  }
   const byWar = new Map();
   for (const a of hosts) { let m = byWar.get(a.w); if (!m) byWar.set(a.w, m = []); m.push(a); }
   for (const a of hosts) {
     const w = warById(a.w), f = factions[a.f];
     if (!w || !f || !f.alive || a.str < 60) { a.gone = true; continue; }
     if (a.fightT === tick) continue;                       // already fought this month
-    const enemy = w.a === a.f ? w.b : w.a, E = factions[enemy];
-    if (!E || !E.alive) { a.gone = true; continue; }
+    const enemies = new Set(foesIn(w, a.f)), friends = new Set(friendsIn(w, a.f));
+    if (!enemies.size) { a.gone = true; continue; }
     const me = hexes[a.h];
     // a pitched battle with any enemy army close by
-    const foe = (byWar.get(a.w) || []).find(e => !e.gone && e.f === enemy && e.fightT !== tick && Math.hypot(hexes[e.h].x - me.x, hexes[e.h].y - me.y) <= NEAR);
+    const foe = (byWar.get(a.w) || []).find(e => !e.gone && enemies.has(e.f) && e.fightT !== tick && Math.hypot(hexes[e.h].x - me.x, hexes[e.h].y - me.y) <= NEAR);
     if (foe) { pitchedBattle(a, foe, w); continue; }
     a.foe = -1;
-    // strategy: a realm that is invaded, or clearly outnumbered, defends its own land before it attacks
-    const side = byWar.get(a.w) || [], foes = side.filter(e => e.f === enemy && !e.gone);
-    const mine = side.filter(e => e.f === a.f && !e.gone).reduce((n, e) => n + e.str, 0), theirs = foes.reduce((n, e) => n + e.str, 0);
-    const lost = new Set((w.lost && w.lost[a.f]) || []);
-    const invaders = foes.filter(e => owner[e.h] === a.f || lost.has(e.h));
+    // strategy: a side that is invaded, or clearly outnumbered, defends its own land before it attacks
+    const side = byWar.get(a.w) || [], foes = side.filter(e => enemies.has(e.f) && !e.gone);
+    const mine = side.filter(e => friends.has(e.f) && !e.gone).reduce((n, e) => n + e.str, 0), theirs = foes.reduce((n, e) => n + e.str, 0);
+    const ownSide = i => friends.has(owner[i]), enemyHeld = i => enemies.has(ctrl(i));
+    const invaders = foes.filter(e => ownSide(e.h));
     const defend = invaders.length > 0 || mine < theirs * .85;
     a.mode = defend ? 'defend' : 'attack';
-    // in enemy land: besiege the province (a defender only besieges what was taken from it)
-    if (owner[a.h] === enemy && (!defend || lost.has(a.h))) {
-      const town = townAt(a.h), garrison = 260 * me.def * (a.h === E.capital ? 3 : 1) * (town && town.pop >= CITY ? 2.2 : 1) * (.6 + E.traits.caut * .8);
+    // in enemy-held land: besiege the province (a defender only besieges its own side's occupied land, to free it)
+    if (enemyHeld(a.h) && (!defend || ownSide(a.h))) {
+      const holder = factions[ctrl(a.h)], town = townAt(a.h), freeing = ownSide(a.h);
+      const garrison = freeing ? 120 * me.def : 260 * me.def * (a.h === holder.capital ? 3 : 1) * (town && town.pop >= CITY ? 2.2 : 1) * (.6 + holder.traits.caut * .8);
       if (R() < .75 * a.str / (a.str + garrison)) {
-        takeProvince(a, w, E, me);
+        takeProvince(a, w, holder, me);
         // the undefended countryside round a fallen province often yields to the army too
-        for (const n of me.nb) {
-          if (owner[n] !== enemy || !hexes[n].land || n === E.capital || (townAt(n) && townAt(n).pop >= TOWN)) continue;
-          if (hosts.some(e => e.f === enemy && !e.gone && e.h === n)) continue;
-          if (R() < .45 * a.str / (a.str + garrison)) takeProvince(a, w, E, hexes[n]);
+        if (!freeing) for (const n of me.nb) {
+          if (!hexes[n].land || !enemyHeld(n) || ownSide(n) || n === factions[ctrl(n)].capital || (townAt(n) && townAt(n).pop >= TOWN)) continue;
+          if (hosts.some(e => enemies.has(e.f) && !e.gone && e.h === n)) continue;
+          if (R() < .45 * a.str / (a.str + garrison)) takeProvince(a, w, factions[ctrl(n)], hexes[n]);
         }
       }
       a.str *= .996; continue;                              // the toll of campaigning far from home
@@ -1417,17 +1624,18 @@ function hostsTick() {
       continue;
     }
     let nx = -1;
+    const pass = new Set([...enemies, ...friends]);
     if (defend) {
-      // hunt the invaders first, then win back lost provinces, then hold the capital
-      const inv = new Set(invaders.map(e => e.h)), back = new Set([...lost].filter(i => owner[i] === enemy));
-      if (inv.size) nx = hostStep(a, w, enemy, c => inv.has(c));
-      if (nx < 0 && back.size) nx = hostStep(a, w, enemy, c => back.has(c));
-      if (nx < 0 && !inv.size && !back.size && mine >= theirs * .85) nx = hostStep(a, w, enemy, c => owner[c] === enemy);
-      if (nx < 0 && a.h !== f.capital && owner[f.capital] === a.f) nx = hostStep(a, w, enemy, c => c === f.capital);
+      // hunt the invaders first, then free occupied provinces, then hold the capital
+      const inv = new Set(invaders.map(e => e.h));
+      nx = hostStep(a, pass, [inv.size ? c => inv.has(c) : null, c => ownSide(c) && enemyHeld(c),
+        !inv.size && mine >= theirs * .85 ? c => enemyHeld(c) : null,
+        a.h !== f.capital && owner[f.capital] === a.f ? c => c === f.capital : null]);
     } else {
-      // on the offensive: strike the enemy's armies if any are near, otherwise its provinces
+      // on the offensive: strike the enemy's armies if any are near; otherwise make for the war's goal, then any enemy land
       const near = new Set(foes.filter(e => Math.hypot(hexes[e.h].x - me.x, hexes[e.h].y - me.y) < 140).map(e => e.h));
-      nx = hostStep(a, w, enemy, c => near.has(c) || owner[c] === enemy);
+      const goal = sideOf(w, a.f) === 'A' ? new Set(w.goal.hexes.filter(i => enemyHeld(i))) : new Set();
+      nx = hostStep(a, pass, [near.size || goal.size ? c => near.has(c) || goal.has(c) : null, c => enemyHeld(c)]);
     }
     if (nx >= 0) { a.from = a.h; a.h = nx; a.moveT = tick; }
     // resting in friendly land refills the ranks from the realm's manpower
@@ -1451,6 +1659,8 @@ function pitchedBattle(a, b, w) {
   const lb = Math.min(b.str, a.str * .07 * (.6 + R() * .8) * (.8 + A.ruler.ability * .4) / (hb.def * homeB));
   a.str -= la; b.str -= lb; a.fightT = b.fightT = tick; a.foe = b.id; b.foe = a.id;
   a.losses += la; b.losses += lb; a.kills += lb; b.kills += la;
+  const sa = sideOf(w, a.f), sb = sideOf(w, b.f);
+  if (sa && sb) { w['kills' + sa] += lb; w['loss' + sa] += la; w['kills' + sb] += la; w['loss' + sb] += lb; }
   const mx = (ha.x + hb.x) / 2, my = (ha.y + hb.y) / 2;
   if (!bulk) { battleFx.push({ x: ha.x, y: ha.y, n: Math.round(la), t: performance.now() }, { x: hb.x, y: hb.y, n: Math.round(lb), t: performance.now() }); if (battleFx.length > 40) battleFx.splice(0, battleFx.length - 40); addPuff({ x: mx, y: my }); }
   for (const [loser, winner, L, W] of [[a, b, A, B], [b, a, B, A]]) {
@@ -1470,19 +1680,21 @@ function pitchedBattle(a, b, w) {
     }
   }
 }
+// an army takes a province: a horde keeps it outright; anyone else occupies it until the peace,
+// or, if it belongs to its own side, frees it
 function takeProvince(a, w, Y, t) {
-  const X = factions[a.f], key = w.a === a.f ? 'ga' : 'gb';
+  const X = factions[a.f], freeing = friendsIn(w, a.f).includes(owner[t.i]);
+  t.lastCap = tick; addPuff(t);
+  if (freeing) { occ[t.i] = -1; return; }
+  if (X.kind === 'horde') { owner[t.i] = X.id; occ[t.i] = -1; dirty = true; } else occ[t.i] = X.id;
   {
     {
-      owner[t.i] = X.id; t.lastCap = tick; w[key]++; X.ruler.gained++; Y.ruler.lost++; dirty = true;
-      w.lost = w.lost || {}; (w.lost[Y.id] = w.lost[Y.id] || []).push(t.i);
-      if (w.lost[X.id]) w.lost[X.id] = w.lost[X.id].filter(i => i !== t.i);
-      addPuff(t);
+      X.ruler.gained++; Y.ruler.lost++;
       w.hot = w.hot || {}; w.hot[t.i] = (w.hot[t.i] || 0) + 1;
       const town = townAt(t.i); if (town) sackTown(town, X, Y);
       if (t.i === Y.capital) {
         fires.push({ i: t.i, until: tick + 24 });
-        Y.lostCap = tick + 36; relocateCapital(Y);
+        Y.lostCap = tick + 36; if (X.kind === 'horde') relocateCapital(Y);
         event(`${fn(X)} storms and sacks the capital of ${fn(Y)}. ${rulerName(Y.ruler)} flees.`, [X, Y], lvl(sig(Y), 'big'));
         if (sig(Y)) { note(t, `Here ${X.name} sacked the seat of ${Y.name}`); moment(60, t, `The Sack of ${Y.name}`, `${X.name} storms the capital`); }
       }
@@ -1526,7 +1738,7 @@ function revolt(f, seedTile, maxU, over) {
   r.size = region.length; r.men = region.length * 160; dirty = true;
   event(`The far provinces of ${fn(f)}${r.faith !== f.faith ? `, faithful to ${faiths[r.faith].name},` : ''} rise in revolt. ${rulerName(r.ruler)} is acclaimed lord of ${fn(r)}.`, [f, r], lvl(sig(f, 1.5) && region.length >= 8));
   if (sig(f, 1.5) && region.length >= 8) note(seedTile, `Here ${r.name} rose against ${f.name}`);
-  declareWar(r, f, `the Revolt of ${r.name}`, true);
+  declareWar(r, f, `the Revolt of ${r.name}`, true, 'independence');
 }
 
 function rulers() {
@@ -1581,7 +1793,7 @@ function lineFails(f) {
   f.house = newHouse(); f.ruler = newRuler(f, rnd(20, 45));
   event(`House ${gone.name} dies out in ${fn(f)}; the lords raise ${rulerName(f.ruler)} of House ${houses[f.house].name}.`, [f], lvl(sig(f)));
   if (A && R() < .7) {
-    const w = declareWar(A, f, `the War of the ${f.name} Succession`, true);
+    const w = declareWar(A, f, `the War of the ${f.name} Succession`, true, 'throne');
     if (w) event(`${fn(A)} claims the throne of ${fn(f)} by marriage: ${w.name} begins.`, [A, f], lvl(sig(A, .5) && sig(f, .5), 'big'));
   }
   return true;
@@ -1600,7 +1812,7 @@ function civilWar(f) {
   event(`The ${f.gov === 'republic' ? 'election' : 'succession'} in ${fn(f)} is disputed. ${rulerName(p.ruler)} seizes the western halls and proclaims ${fn(p)}: ${name} begins.`
     .replace('western', pick(['western', 'eastern', 'northern', 'southern', 'outer'])), [f, p], lvl(sig(f), 'big'));
   if (sig(f)) { note(hexes[seat], `Here a pretender raised ${p.name}`); if (sig(f, 1.5)) moment(55, hexes[seat], `A Crown Divided`, `the War of the ${f.name} Succession`); }
-  declareWar(p, f, name, true);
+  declareWar(p, f, name, true, 'independence');
 }
 
 function diplomacy() {
@@ -1630,12 +1842,15 @@ function diplomacy() {
       if (holy && X.gov === 'theocracy') p += .04;
       if (X.gov === 'republic') p *= .5;
       p *= 1 + clamp(Y.gold / (Math.abs(X.gold) + 10), 0, 1) * .3;
-      if (R() < p) { declareWar(X, Y, holy && (X.gov === 'theocracy' || R() < .3) ? `the Holy War against ${Y.name}` : null); break; }
+      // an infamous conqueror makes its neighbours bold
+      p += Math.min(.08, (Y.infamy || 0) * .0015);
+      const holyWar = holy && (X.gov === 'theocracy' || R() < .3);
+      if (R() < p) { declareWar(X, Y, null, false, holyWar ? 'holy' : null); break; }
     }
   }
   // coalitions against whoever is biggest
-  const top = al.reduce((a, b) => (b.size > (a?.size ?? -1) ? b : a), null);
-  if (top && top.size / landCount > .2) {
+  const biggest = al.reduce((a, b) => (b.size > (a?.size ?? -1) ? b : a), null), feared = al.reduce((a, b) => ((b.infamy || 0) > (a?.infamy ?? -1) ? b : a), null);
+  for (const top of [biggest, feared]) if (top && (top.size / landCount > .2 || (top === feared && top.infamy > 30))) {
     const nbs = [...top.fronts.keys()].map(id => factions[id]).filter(f => f.alive);
     for (let i = 0; i < nbs.length; i++) for (let k = i + 1; k < nbs.length; k++) {
       const a = nbs[i], b = nbs[k];
@@ -1648,15 +1863,9 @@ function diplomacy() {
     // royal marriages between neighbouring crowns
     if (B.id > A.id && A.gov === 'kingdom' && B.gov === 'kingdom' && !warBetween(A, B) && R() < (A.allies.has(B.id) ? .06 : .02)) marry(A, B);
   }
-  // peace
-  for (const w of wars.slice()) {
-    const A = factions[w.a], B = factions[w.b];
-    const yrs = (tick - w.start) / 12, la = 1 - A.size / w.sa, lb = 1 - B.size / w.sb;
-    // a crown does not lightly let rebels go: it keeps fighting while it still has armies in the field
-    const rebelWar = (A.kind === 'rebel' && A.parent === B.id) || (B.kind === 'rebel' && B.parent === A.id);
-    const crownHosts = rebelWar && hosts.some(h => h.w === w.id && h.f === (A.kind === 'rebel' ? B.id : A.id));
-    if (R() < (.05 + yrs * .015 + Math.max(la, lb, 0) * .5) * (crownHosts ? .3 : 1)) endWar(w);
-  }
+  // infamy fades with the years
+  for (const f of al) f.infamy = (f.infamy || 0) * .93;
+  peaceTable();
 }
 
 function disasters() {
@@ -1688,7 +1897,7 @@ function spawnHorde() {
   dirty = true;
   event(`From beyond the edge of the map ride ${fn(h)} under ${rulerName(h.ruler)}. The steppe-bells are heard for the first time.`, [h], 'big');
   note(t, `Here rode in the ${h.name} Horde`); moment(70, t, `The ${h.name} Horde`, `rides in from beyond the edge of the map`);
-  for (const id of victims) declareWar(h, factions[id], null, true);
+  for (const id of victims) declareWar(h, factions[id], null, true, 'conquest');
 }
 function absorptions() {
   for (const f of aliveList()) {
@@ -1719,7 +1928,12 @@ function die(f) {
   const c = hexes[f.capital];
   ruins.push({ x: c.x, y: c.y, name: f.name, year: year(), peak: f.peak });
   if (ruins.length > 14) ruins.shift();
-  for (const w of wars.slice()) if (w.a === f.id || w.b === f.id) wars.splice(wars.indexOf(w), 1);
+  for (const w of wars.slice()) {
+    if (!sideOf(w, f.id)) continue;
+    w.A = w.A.filter(id => id !== f.id); w.B = w.B.filter(id => id !== f.id);
+    if (!w.A.length || !w.B.length) endWar(w, null);
+    else { w.a = w.A.includes(w.a) ? w.a : w.A[0]; w.b = w.B.includes(w.b) ? w.b : w.B[0]; }
+  }
   for (const g of factions) g.allies.delete(f.id);
   f.allies.clear();
   const great = f.peak >= landCount * .15;
@@ -1762,6 +1976,8 @@ function startEra(name, kind) {
 function simTick() {
   tick++;
   computeStats();
+  // new recruits each month (here, not in computeStats, so that recomputing statistics on resume adds none)
+  for (const f of aliveList()) f.men = Math.min(f.menCap, (f.men || 0) + f.menCap * .02);
   expansion();
   hostsTick();
   if (tick % 3 === 0) revolts();
@@ -1774,6 +1990,7 @@ function simTick() {
 function initWorld(s) {
   genWorld(s);
   owner = new Int16Array(hexes.length).fill(-1);
+  occ = new Int16Array(hexes.length).fill(-1);
   distArr = new Int16Array(hexes.length).fill(-1);
   hosts = []; warSeq = 0; hostSeq = 0; battleFx = [];
   towns = []; roads = new Map(); battlefields = []; houses = []; faiths = []; marriages = [];
@@ -1832,15 +2049,15 @@ function newWorld(s) {
 // ---------- saving & resuming ----------
 // The world lives in this browser's storage. Terrain is rebuilt from the seed; everything
 // that happened since is saved, and time that passed while the page was closed is replayed.
-const SAVE_KEY = 'ledger-of-crowns-v4', PREV_KEY = 'ledger-of-crowns-v4-set-aside', MAX_CATCHUP_YEARS = 200;
+const SAVE_KEY = 'ledger-of-crowns-v5', PREV_KEY = 'ledger-of-crowns-v5-set-aside', MAX_CATCHUP_YEARS = 200;
 const b64 = a => { const u = new Uint8Array(a.buffer, a.byteOffset, a.byteLength); let str = ''; for (let i = 0; i < u.length; i += 0x8000) str += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(str); };
 const unb64 = str => { const bin = atob(str), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return new Int16Array(u.buffer); };
 function packWorld(maxSnaps) {
   const now = year();
   return {
     // years still owed to an unfinished catch-up stay owed if the page closes now
-    v: 4, seed, rs, tick, savedAt: Date.now() - (catching ? catching.left / TPS * 1000 : 0), paused, speed, follow, worldName, founding,
-    owner: b64(owner), caps: land.filter(h => tick - h.lastCap < 36).map(h => [h.i, h.lastCap]),
+    v: 5, seed, rs, tick, savedAt: Date.now() - (catching ? catching.left / TPS * 1000 : 0), paused, speed, follow, worldName, founding,
+    owner: b64(owner), occ: b64(occ), caps: land.filter(h => tick - h.lastCap < 36).map(h => [h.i, h.lastCap]),
     factions: factions.map(f => {
       const { fronts, wildFront, allies, truce, log, rulers, ...rest } = f;
       // long-dead realms keep less of their history, so centuries of play still fit in storage
@@ -1861,12 +2078,12 @@ function saveWorld() {
   }
 }
 function loadSave() {
-  try { const raw = localStorage.getItem(SAVE_KEY); const sv = raw && JSON.parse(raw); return sv && sv.v === 4 ? sv : null; } catch (e) { return null; }
+  try { const raw = localStorage.getItem(SAVE_KEY); const sv = raw && JSON.parse(raw); return sv && sv.v === 5 ? sv : null; } catch (e) { return null; }
 }
 function restoreWorld(sv) {
   initWorld(sv.seed);
   rs = sv.rs; tick = sv.tick;
-  owner.set(unb64(sv.owner));
+  owner.set(unb64(sv.owner)); occ.set(unb64(sv.occ));
   for (const [i, t] of sv.caps) hexes[i].lastCap = t;
   factions = sv.factions.map(o => ({ ...o, allies: new Set(o.allies), truce: new Map(o.truce), fronts: new Map(), wildFront: [] }));
   towns = sv.towns || []; roads = new Map(sv.roads || []); battlefields = sv.battlefields || [];
@@ -1918,7 +2135,7 @@ function offerReturn(prev) {
 // The missed years are played out a slice at a time, a few milliseconds per frame, so the page keeps drawing
 // and responding while history catches up; the summary appears when it is done.
 let catching = null;
-const CATCH_SLICE_MS = 40;
+const CATCH_SLICE_MS = 60;
 function catchUp(ms) {
   if (paused || ms < 20000 || catching) return;
   const ticks = Math.min(Math.floor(ms / 1000 * TPS), MAX_CATCHUP_YEARS * 12);
@@ -2364,6 +2581,15 @@ function drawNotes(x) {
 function drawLiveMarks(x) {
   const own = owner;
   {
+    // occupied provinces: stripes in the occupier's colour
+    x.lineWidth = 1.6;
+    for (const h of land) {
+      const o = occ[h.i]; if (o < 0 || !factions[o]) continue;
+      x.strokeStyle = dark(factions[o]); x.globalAlpha = .6; x.beginPath();
+      for (let k = -2; k <= 2; k++) { x.moveTo(h.x + k * 5 - 6, h.y - 8); x.lineTo(h.x + k * 5 + 6, h.y + 8); }
+      x.stroke();
+    }
+    x.globalAlpha = 1;
     // fresh conquests: red-brown hatching that fades over three years
     x.strokeStyle = '#7a2418'; x.lineWidth = .8;
     for (const h of land) {
@@ -2880,7 +3106,7 @@ function renderCard() {
   const f = follow != null ? factions[follow] : null;
   if (!f) { card.hidden = true; hint.hidden = false; return; }
   card.hidden = false; hint.hidden = true;
-  const r = f.ruler, foes = wars.filter(w => w.a === f.id || w.b === f.id).map(w => fn(factions[w.a === f.id ? w.b : w.a]));
+  const r = f.ruler, foes = wars.filter(w => sideOf(w, f.id)).map(w => `${foesIn(w, f.id).map(id => fn(factions[id])).join(', ')} <i style="color:var(--muted)">(${standing(w, f.id)})</i>`);
   const allies = [...f.allies].map(id => fn(factions[id]));
   const past = f.rulers.slice(-6).reverse().map(p => `<li>${rulerName(p)}${p.house != null && houses[p.house] ? ` <span style="color:var(--muted)">of House ${houses[p.house].name}</span>` : ''} <span style="color:var(--muted)">(Y.${p.start}–${p.end})</span></li>`).join('');
   const deeds = f.log.slice(-8).reverse().map(e => `<li><span style="color:var(--muted)">Y.${e.y}</span> ${e.text}</li>`).join('');
@@ -2897,7 +3123,8 @@ function renderCard() {
       ${(() => { const kin = marriages.filter(m => (m.a === f.id || m.b === f.id) && year() - m.year < 80).map(m => factions[m.a === f.id ? m.b : m.a]).filter(g => g.alive); return kin.length ? `<dt>Kin</dt><dd>${[...new Set(kin)].map(fn).join(', ')}</dd>` : ''; })()}
       <dt>Temper</dt><dd>${traitWords(f.traits)}</dd>
       <dt>Allies</dt><dd>${allies.join(', ') || '—'}</dd>
-      <dt>At war</dt><dd>${foes.join(', ') || '—'}</dd>
+      <dt>At war</dt><dd>${foes.join('; ') || '—'}</dd>
+      ${f.tributes && f.tributes.length ? `<dt>Tribute</dt><dd>pays ${f.tributes.map(tr => fn(factions[tr.to])).join(', ')}</dd>` : ''}
       ${f.plague > 0 ? '<dt>Afflicted</dt><dd>by plague</dd>' : ''}` :
       `<dt>Fell</dt><dd>Year ${f.fell}, after reaching ${f.peak} provinces</dd>`}
     </dl>
