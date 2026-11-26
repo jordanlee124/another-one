@@ -58,6 +58,6 @@ Everything is in one file, `index.html`: about 1,500 lines of plain JavaScript a
 4. **Overlay.** Borders, names, capitals and ruins. Redrawn when something changes.
 5. **Live marks.** Armies, battle smoke, fires, plague, ships, fresh conquests and map notes. Animated at about 30 frames a second.
 
-When the world changes, the map redraws only what changed. It compares the world against a snapshot of what it last showed (provinces, towns, roads, battlefields and realm names), repaints just those areas, and falls back to a full redraw if a change can't be confined. A one-province change costs about a fifth of a full redraw, with pixel-identical results.
+When the world changes, the map redraws only what changed. It compares the world against a snapshot of what it last showed (provinces, towns, roads, battlefields and realm names), repaints just those areas, and falls back to a full redraw if a change can't be confined. A one-province change costs about a fifth of a full redraw, with pixel-identical results. At normal zoom, each town's buildings and fields are drawn once into an image and reused until the town changes, so a full redraw copies images instead of drawing thousands of houses. Zoomed in, towns are drawn directly, because only a few are on screen.
 
 Typefaces: IM Fell English and IM Fell English SC by Igino Marini, under the SIL Open Font License.
