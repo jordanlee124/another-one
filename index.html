@@ -797,7 +797,7 @@ function drawCartouche(x) {
 
 // ---------- washes & labels ----------
 let washSmall;
-function renderWash(target, own, fields, colorOf) {
+function renderWash(target, own, fields, colorOf, rects = null) {
   // pigment per grid point, blended where realms meet, then upscaled smoothly
   if (!washSmall || washSmall.width !== gw) washSmall = mk(gw, gh);
   const sx = washSmall.getContext('2d'), img = sx.createImageData(gw, gh), d = img.data, rgb = new Map();
@@ -812,20 +812,35 @@ function renderWash(target, own, fields, colorOf) {
     d[p * 4] = r / a; d[p * 4 + 1] = g / a; d[p * 4 + 2] = b / a; d[p * 4 + 3] = clamp((a - .5) * 3 + .5, 0, 1) * 255;
   }
   sx.putImageData(img, 0, 0);
+  // with `rects`, only those parts of the map (in map units) are repainted; the rest of the wash is kept
+  const BM = 12, clipTo = (c, grow) => { c.beginPath(); for (const r of rects) c.rect((r.x0 - grow) * OS, (r.y0 - grow) * OS, (r.x1 - r.x0 + 2 * grow) * OS, (r.y1 - r.y0 + 2 * grow) * OS); c.clip(); };
   const t = washTmp.getContext('2d');
-  t.setTransform(1, 0, 0, 1, 0, 0); t.clearRect(0, 0, washTmp.width, washTmp.height);
+  t.save(); t.setTransform(1, 0, 0, 1, 0, 0);
+  if (rects) { clipTo(t, BM); for (const r of rects) t.clearRect((r.x0 - BM) * OS, (r.y0 - BM) * OS, (r.x1 - r.x0 + 2 * BM) * OS, (r.y1 - r.y0 + 2 * BM) * OS); }
+  else t.clearRect(0, 0, washTmp.width, washTmp.height);
   t.imageSmoothingEnabled = true; t.imageSmoothingQuality = 'high';
   t.drawImage(washSmall, -GS * OS / 2, -GS * OS / 2, gw * GS * OS, gh * GS * OS);
   // pigment pools at the edge of each wash, as real watercolour does
   t.setTransform(OS, 0, 0, OS, 0, 0); t.lineWidth = 4; t.lineCap = 'round'; t.lineJoin = 'round'; t.globalAlpha = .75;
   for (const [id] of fields) { t.strokeStyle = mix(colorOf(id), '#2a1d12', .3); strokeSegs(t, realmContour(fields, id)); }
-  t.globalAlpha = 1;
+  t.restore();
   const w = target.getContext('2d');
-  w.setTransform(1, 0, 0, 1, 0, 0); w.clearRect(0, 0, target.width, target.height);
-  w.globalCompositeOperation = 'source-over';
-  w.filter = 'blur(3px)'; w.drawImage(washTmp, 0, 0); w.filter = 'none';
-  w.globalCompositeOperation = 'destination-in'; w.drawImage(landBig, 0, 0);
-  w.globalCompositeOperation = 'source-over';
+  w.save(); w.setTransform(1, 0, 0, 1, 0, 0); w.globalCompositeOperation = 'source-over';
+  if (!rects) {
+    w.clearRect(0, 0, target.width, target.height);
+    w.filter = 'blur(3px)'; w.drawImage(washTmp, 0, 0); w.filter = 'none';
+    w.globalCompositeOperation = 'destination-in'; w.drawImage(landBig, 0, 0);
+  } else for (const r of rects) {
+    // blur from a slightly larger piece of the source, so there is no seam at the edge of the repainted part
+    const X = Math.max(0, Math.floor(r.x0 * OS)), Y = Math.max(0, Math.floor(r.y0 * OS)), W = Math.min(target.width, Math.ceil(r.x1 * OS)) - X, H = Math.min(target.height, Math.ceil(r.y1 * OS)) - Y;
+    if (W <= 0 || H <= 0) continue;
+    const M2 = Math.floor(BM * OS) - 2, X2 = Math.max(0, X - M2), Y2 = Math.max(0, Y - M2), W2 = Math.min(target.width, X + W + M2) - X2, H2 = Math.min(target.height, Y + H + M2) - Y2;
+    w.save(); w.beginPath(); w.rect(X, Y, W, H); w.clip(); w.clearRect(X, Y, W, H);
+    w.globalCompositeOperation = 'source-over'; w.filter = 'blur(3px)'; w.drawImage(washTmp, X2, Y2, W2, H2, X2, Y2, W2, H2); w.filter = 'none';
+    w.globalCompositeOperation = 'destination-in'; w.drawImage(landBig, X2, Y2, W2, H2, X2, Y2, W2, H2);
+    w.restore();
+  }
+  w.restore();
 }
 
 function computeLabels(own, infoOf) {
@@ -1759,7 +1774,7 @@ function initWorld(s) {
   towns = []; roads = new Map(); battlefields = []; houses = []; faiths = []; marriages = [];
   faithOf = new Int16Array(hexes.length).fill(-1); faithMode = false; syncFaithButton();
   factions = []; wars = []; chron = []; eras = []; ruins = []; notes = []; tick = 0; collapse = null; lastWarYear = 0;
-  moments = []; momentNow = null; founding = false; follow = null; viewEra = null; labels = []; snapLabels = []; puffs = []; fires = []; battleFx = [];
+  townCache.clear(); cachePx = 0; shown = null; ovRects = null; moments = []; momentNow = null; founding = false; follow = null; viewEra = null; labels = []; snapLabels = []; puffs = []; fires = []; battleFx = [];
   document.getElementById('chron').innerHTML = '';
   document.getElementById('banner').hidden = true;
   renderLandMask(); renderPaper(); renderInk(); buildGridWeights();
@@ -2015,7 +2030,7 @@ function drawOverlay(x, own, labs, live, fields, borders) {
     for (const t of towns) { if (t.ruined) drawTown(x, t); else reach.set(t, drawSettlement(x, t)); }
     x.textBaseline = 'middle';
     for (const t of [...towns].filter(t => !t.ruined && t.pop >= TOWN && !factions.some(f => f.alive && f.capital === t.i)).sort((a, b) => b.pop - a.pop)) {
-      const h = hexes[t.i], fs = (11 + Math.min(13, Math.sqrt(t.pop) * 2.6)) * LZ;
+      const h = hexes[t.i], fs = townFont(t) * LZ;
       x.font = `${t.pop >= CITY ? '' : 'italic '}${fs}px "IM Fell English${t.pop >= GREAT ? ' SC' : ''}", Georgia, serif`;
       const w = x.measureText(t.name).width;
       for (const side of [1, -1]) {
@@ -2528,6 +2543,36 @@ function claimTown(t) {
   claimDisc(pl.h.x, pl.h.y, 4.5);                                  // the square and the temple
 }
 // fields: strip fields on the town's own grid, only on free ground in the town's own realm, nearest first
+// ---------- town drawings, drawn once and reused ----------
+// Each town's fields and its buildings are painted once into their own image at the current scale, and reused
+// until the town (or the zoom) changes. Panning and simulation then only copy images.
+const townCache = new Map(), CACHE_MAX_PX = 24e6;
+let cachePx = 0, cacheScale = 0;
+function cachedPaint(x, t, slot, sig, b, paint) {
+  const S = scale * dpr;
+  if (S !== cacheScale) { townCache.clear(); cachePx = 0; cacheScale = S; }   // images drawn at another zoom are no use now
+  const key = sig + '|' + S.toFixed(4), W = Math.ceil((b.x1 - b.x0) * S) + 2, H = Math.ceil((b.y1 - b.y0) * S) + 2;
+  // zoomed in, only a few towns are on screen and drawing them directly is cheaper than copying big images
+  if (zoom >= 1.6 || W * H > 4e6 || W < 1 || H < 1 || window.__noTownCache) { paint(x); return; }          // too big to be worth keeping: draw it directly
+  let byTown = townCache.get(t); if (!byTown) townCache.set(t, byTown = {});
+  let c = byTown[slot];
+  if (!c || c.key !== key) {
+    if (c) cachePx -= c.cv.width * c.cv.height;
+    if (cachePx + W * H > CACHE_MAX_PX) { for (const [, e] of townCache) for (const k in e) cachePx -= e[k].cv.width * e[k].cv.height; townCache.clear(); byTown = {}; townCache.set(t, byTown); }
+    const cv = c && c.cv.width === W && c.cv.height === H ? c.cv : mk(W, H), g = cv.getContext('2d');
+    g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, W, H); g.setTransform(S, 0, 0, S, -b.x0 * S + 1, -b.y0 * S + 1);
+    paint(g);
+    byTown[slot] = c = { key, cv, b }; cachePx += W * H;
+  }
+  // copy it onto the overlay at whole device pixels, so it stays sharp
+  x.save(); x.setTransform(1, 0, 0, 1, 0, 0);
+  x.drawImage(c.cv, Math.round((b.x0 * scale + ox) * dpr) - 1, Math.round((b.y0 * scale + oy) * dpr) - 1);
+  x.restore();
+}
+function pruneTownCache() {
+  const live = new Set(towns);
+  for (const [t, e] of townCache) if (!live.has(t)) { for (const k in e) cachePx -= e[k].cv.width * e[k].cv.height; townCache.delete(t); }
+}
 function drawFields(x, t) {
   if (t.ruined || t.pop < .4) return;
   const o = owner[t.i]; if (o < 0) return;
@@ -2535,13 +2580,14 @@ function drawFields(x, t) {
   const want = Math.round(clamp(5 + Math.pow(t.pop, .8) * 3.5, 5, 70)), rr = mulberry32(pl.rr);
   const reach = townRadius(t.pop), fr = Math.ceil((reach + 6 + Math.sqrt(want) * FIELD * 1.4) / FIELD);
   const vr = fr * FIELD + 10;
-  if (pl.h.x + vr < -ox / scale || pl.h.x - vr > (viewW - ox) / scale || pl.h.y + vr < -oy / scale || pl.h.y - vr > (viewH - oy) / scale) {
-    // off screen: still claim the ground, so neighbours on screen leave it alone
-  }
+  // off screen: the fields still claim their ground, so neighbours on screen leave it alone, but are not drawn
+  const onScreen = !(pl.h.x + vr < -ox / scale || pl.h.x - vr > (viewW - ox) / scale || pl.h.y + vr < -oy / scale || pl.h.y - vr > (viewH - oy) / scale);
+  // outside the part being repainted, a town's fields still claim their ground but are not drawn
+  const drawIt = onScreen && inClip(townArea(t));
   const cells = [];
   for (let i = -fr; i <= fr; i++) for (let j = -fr; j <= fr; j++) cells.push({ i, j, d: Math.hypot(i, j) + rr() * .3 });
   cells.sort((p, q) => p.d - q.d);
-  const byTint = tints.map(() => new Path2D()), edges = new Path2D(), furrows = new Path2D(); let n = 0;
+  const byTint = tints.map(() => new Path2D()), edges = new Path2D(), furrows = new Path2D(), placed = []; let n = 0;
   const w = FIELD / 2 - .35;
   for (const cell of cells) {
     if (n >= want) break;
@@ -2553,22 +2599,33 @@ function drawFields(x, t) {
     if (probe.some(([px, py]) => { const hx = hexes[nearestHex(px, py)]; return !hx || owner[hx.i] !== o || hx.terrain === 'mountain'; })) continue;
     // claim the field's ground, slightly inset so the next field in the row still fits
     for (let u = -q; u <= q + .01; u += REG * .8) for (let v = -q; v <= q + .01; v += REG * .8) { const k = regAt(...pl.toW(cu + u, cv + v)); if (k >= 0) register[k] = 1; }
-    n++;
-    const along = (cell.i + cell.j) % 2 === 0, strip = (2 * w) / 3;
-    for (let k = 0; k < 3; k++) {
-      const a0 = -w + k * strip + .12, a1 = a0 + strip - .24;
-      const pts = (along ? [[a0, -w], [a1, -w], [a1, w], [a0, w]] : [[-w, a0], [w, a0], [w, a1], [-w, a1]]).map(([u, v]) => pl.toW(cu + u, cv + v));
-      polyPath(byTint[Math.floor(rr() * tints.length)], pts); polyPath(edges, pts);
-      const m = (a0 + a1) / 2, [p0, p1] = along ? [[m, -w + .4], [m, w - .4]] : [[-w + .4, m], [w - .4, m]];
-      furrows.moveTo(...pl.toW(cu + p0[0], cv + p0[1])); furrows.lineTo(...pl.toW(cu + p1[0], cv + p1[1]));
-    }
+    n++; t.fieldR = Math.max(t.fieldR || 0, Math.hypot(probe[4][0] - pl.h.x, probe[4][1] - pl.h.y) + FIELD);
+    placed.push(cell);
   }
   t.fieldsShown = n; t.fieldsWanted = want;
-  x.save();
-  tints.forEach((col, i) => { x.fillStyle = col; x.fill(byTint[i]); });
-  x.strokeStyle = 'rgba(90,70,40,.4)'; x.lineWidth = .25; x.stroke(edges);
-  x.strokeStyle = 'rgba(90,70,40,.3)'; x.lineWidth = .25; x.stroke(furrows);
-  x.restore();
+  if (!drawIt || !placed.length) return;
+  // the strips' colours, in a fixed order so the same fields always look the same
+  const tintOf = placed.map(() => [0, 1, 2].map(() => Math.floor(rr() * tints.length)));
+  const b = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+  for (const cell of placed) { const [cx, cy] = pl.toW(cell.i * FIELD, cell.j * FIELD); b.x0 = Math.min(b.x0, cx - FIELD); b.y0 = Math.min(b.y0, cy - FIELD); b.x1 = Math.max(b.x1, cx + FIELD); b.y1 = Math.max(b.y1, cy + FIELD); }
+  const sig = placed.map(c => c.i + ',' + c.j).join(';') + '|' + (f.golden > tick ? 'g' : '');
+  cachedPaint(x, t, 'fields', sig, b, g => {
+    placed.forEach((cell, pi) => {
+      const cu = cell.i * FIELD, cv = cell.j * FIELD, along = (cell.i + cell.j) % 2 === 0, strip = (2 * w) / 3;
+      for (let k = 0; k < 3; k++) {
+        const a0 = -w + k * strip + .12, a1 = a0 + strip - .24;
+        const pts = (along ? [[a0, -w], [a1, -w], [a1, w], [a0, w]] : [[-w, a0], [w, a0], [w, a1], [-w, a1]]).map(([u, v]) => pl.toW(cu + u, cv + v));
+        polyPath(byTint[tintOf[pi][k]], pts); polyPath(edges, pts);
+        const m = (a0 + a1) / 2, [p0, p1] = along ? [[m, -w + .4], [m, w - .4]] : [[-w + .4, m], [w - .4, m]];
+        furrows.moveTo(...pl.toW(cu + p0[0], cv + p0[1])); furrows.lineTo(...pl.toW(cu + p1[0], cv + p1[1]));
+      }
+    });
+    g.save();
+    tints.forEach((col, i) => { g.fillStyle = col; g.fill(byTint[i]); });
+    g.strokeStyle = 'rgba(90,70,40,.4)'; g.lineWidth = .25; g.stroke(edges);
+    g.strokeStyle = 'rgba(90,70,40,.3)'; g.lineWidth = .25; g.stroke(furrows);
+    g.restore();
+  });
 }
 function cityWall(x, pl, count, m) {
   const held = occupied(pl, count);
@@ -2587,12 +2644,25 @@ function cityWall(x, pl, count, m) {
   }
 }
 function drawSettlement(x, t) {
+  if (!inClip(townArea(t))) return t.reach || townRadius(t.pop);
   const want = builtCount(t.pop), peak = Math.max(want, builtCount(t.peak || t.pop));
-  const pl = townPlan(t, peak), h = pl.h;
-  const all = occupied(pl, peak), live = all.slice(0, want), ghost = all.slice(want), isTown = t.pop >= TOWN;
+  const pl = townPlan(t, peak), h = pl.h, all = occupied(pl, peak);
   // skip a town entirely when it is off screen
   const vr = townRadius(t.peak || t.pop) * 1.3 + 20, vx0 = -ox / scale, vy0 = -oy / scale, vx1 = (viewW - ox) / scale, vy1 = (viewH - oy) / scale;
   if (h.x + vr < vx0 || h.x - vr > vx1 || h.y + vr < vy0 || h.y - vr > vy1) return townRadius(t.pop);
+  // everything a town's drawing depends on; if none of it changed, the last image is reused
+  let ext = 10; for (const sl of all) ext = Math.max(ext, Math.hypot(sl.x - h.x, sl.y - h.y));
+  ext = ext * (pl.type === 'radial' ? 1.35 : 1.15) + 24;
+  const o = owner[t.i], fa = o >= 0 ? factions[o].faith % 2 : -1;
+  const sig = [want, peak, kindOf(t), fa, zoom < 1.6 ? 'a' : zoom < 2.2 ? 'b' : 'c', pl.type, pl.slots.length].join('|');
+  cachedPaint(x, t, 'town', sig, { x0: h.x - ext, y0: h.y - ext, x1: h.x + ext, y1: h.y + ext }, g => paintSettlement(g, t, pl, all, want));
+  const live = all.slice(0, want);
+  let reach = 8; for (const sl of live) reach = Math.max(reach, Math.hypot(sl.x - h.x, sl.y - h.y));
+  t.reach = reach;
+  return reach;
+}
+function paintSettlement(x, t, pl, all, want) {
+  const h = pl.h, live = all.slice(0, want), ghost = all.slice(want), isTown = t.pop >= TOWN;
   x.save(); x.lineJoin = 'round'; x.lineCap = 'round';
   const streets = new Path2D(), plaza = new Path2D();
   if (pl.type === 'radial') {
@@ -2642,7 +2712,6 @@ function drawSettlement(x, t) {
   }
   live.forEach((sl, k) => {
     if (sl.b && solid.has(sl.b)) return;
-    if (sl.x < vx0 - 4 || sl.x > vx1 + 4 || sl.y < vy0 - 4 || sl.y > vy1 + 8) return;
     items.push({ x: sl.x, y: sl.y, p: sl, kind: t.pop >= CITY && k % 23 === 11 ? 'tower' : 'house', roof: roofs[sl.core ? 0 : 1 + (k % 2)] });
   });
   if (isTown) { const [tx, ty] = pl.toW(0, -HALF * .45); items.push({ x: tx, y: ty, p: { w: 1.6 }, kind: 'temple', roof: roofs[0] }); }
@@ -2664,8 +2733,6 @@ function drawSettlement(x, t) {
     for (const it of special) building(x, it.kind, it.x, it.y, it.p, it.roof, dome, detail);
   } else for (const it of items) building(x, it.kind, it.x, it.y, it.p, it.roof, dome, detail);
   x.restore();
-  let reach = 8; for (const sl of live) reach = Math.max(reach, Math.hypot(sl.x - h.x, sl.y - h.y));
-  return reach;
 }
 function drawTown(x, t) {
   const h = hexes[t.i];
@@ -2738,8 +2805,21 @@ function draw() {
   // while the view is moving, the last overlay is moved with it; once it settles, it is redrawn sharp
   const stale = !ovView || ovView.scale !== scale || ovView.ox !== ox || ovView.oy !== oy;
   if (stale && performance.now() - viewMovedAt > 150) ovDirty = true;
+  if (!ovDirty && ovRects && !stale) {
+    // repaint only the changed parts of the overlay; if a name elsewhere had to move, redraw it all next time
+    const o = ovC.getContext('2d'), rs = mergeRects(ovRects), before = labelBoxes.slice();
+    ovRects = null;
+    o.save(); o.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * ox, dpr * oy);
+    o.beginPath(); for (const r of rs) o.rect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0); o.clip();
+    for (const r of rs) o.clearRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
+    ovClip = rs; drawOverlay(o, owner, labels, true, liveFields, liveBorders); ovClip = null;
+    o.restore();
+    const inside = b => rs.some(r => b.x0 < r.x1 && b.x1 > r.x0 && b.y0 < r.y1 && b.y1 > r.y0);
+    const key = bs => bs.filter(b => !inside(b)).map(b => [b.x0, b.y0, b.x1, b.y1].map(Math.round).join(',')).sort().join(';');
+    if (key(before) !== key(labelBoxes)) ovDirty = true;
+  }
   if (ovDirty) {
-    ovView = { scale, ox, oy };
+    ovView = { scale, ox, oy }; ovRects = null; lastFullOv = performance.now(); pruneTownCache();
     const o = ovC.getContext('2d');
     // the overlay is drawn at screen resolution for the current view, so names stay crisp at any zoom
     o.setTransform(1, 0, 0, 1, 0, 0); o.clearRect(0, 0, ovC.width, ovC.height); o.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * ox, dpr * oy);
@@ -2768,7 +2848,7 @@ const traitWords = t => [
 ].filter(Boolean).join(', ') || 'unremarkable';
 const abilityWord = a => a > .75 ? 'gifted' : a > .45 ? 'capable' : a > .2 ? 'middling' : 'feeble';
 function renderCard() {
-  ovDirty = true;
+  if (follow !== shownFollow) { shownFollow = follow; ovDirty = true; }   // the followed realm's outline changes only when the choice does
   const card = document.getElementById('card'), hint = document.getElementById('hint');
   const f = follow != null ? factions[follow] : null;
   if (!f) { card.hidden = true; hint.hidden = false; return; }
@@ -2926,6 +3006,69 @@ document.addEventListener('visibilitychange', () => {
   else if (hiddenAt) { const ms = Date.now() - hiddenAt; hiddenAt = null; last = performance.now(); catchUp(ms); }
 });
 
+// ---------- redrawing only what changed ----------
+// A snapshot of what the map last showed. When the world changes, the areas that differ are worked out and
+// only those are repainted; anything that cannot be safely confined falls back to a full redraw.
+let ovClip = null, shown = null, ovRects = null, shownFollow = null, lastFullOv = 0;
+const box = (x, y, r) => ({ x0: x - r, y0: y - r, x1: x + r, y1: y + r });
+// a town, its fields and the name written beside it
+const townArea = t => { const r = Math.max(t.fieldR || 0, townRadius(Math.max(t.pop, t.peak || 0))) + 14, h = hexes[t.i], nameW = townFont(t) * t.name.length * .65 + 10; return { x0: h.x - r - nameW, y0: h.y - r, x1: h.x + r + nameW, y1: h.y + r }; };
+function mergeRects(rs) {
+  let out = rs.slice(), merged = true;
+  while (merged) {
+    merged = false;
+    for (let i = 0; i < out.length && !merged; i++) for (let j = i + 1; j < out.length; j++) {
+      const a = out[i], b = out[j];
+      if (a.x0 <= b.x1 && b.x0 <= a.x1 && a.y0 <= b.y1 && b.y0 <= a.y1) {
+        out[i] = { x0: Math.min(a.x0, b.x0), y0: Math.min(a.y0, b.y0), x1: Math.max(a.x1, b.x1), y1: Math.max(a.y1, b.y1) };
+        out.splice(j, 1); merged = true; break;
+      }
+    }
+  }
+  return out;
+}
+// during a partial redraw, whether an area overlaps the part being repainted
+const inClip = r => !ovClip || ovClip.some(c => r.x0 < c.x1 && r.x1 > c.x0 && r.y0 < c.y1 && r.y1 > c.y0);
+const tooBig = rs => rs.reduce((n, r) => n + (r.x1 - r.x0) * (r.y1 - r.y0), 0) > MW * MH * .55;
+// a town's name grows in whole steps with the town, so a small change in size doesn't move its label
+const townFont = t => 11 + Math.min(13, Math.round(Math.sqrt(t.pop) * 2.6));
+const townSig = t => {
+  const n = builtCount(t.pop), o = owner[t.i], f = o >= 0 ? factions[o] : null;
+  return [t.ruined ? 'R' : '', townFont(t), Math.round(n / Math.max(4, n * .06)), Math.round(builtCount(t.peak || t.pop) / 6), kindOf(t), o,
+    f ? f.faith % 2 : '', f && f.golden > tick ? 'g' : ''].join('|');
+};
+const roadSig = r => (r.used ? 'u' : '') + (r.age < 15 ? 'd' : '') + Math.round(Math.min(r.age, 100) / 25);
+const labelSig = l => [Math.round(l.x), Math.round(l.y), Math.round(l.size), l.name, l.sub, l.capital].join('|');
+const labelBox = l => { const half = l.size * (l.name.length * .55 + 2), sx = l.cands ? Math.max(...l.cands.map(c => Math.abs(c[0] - l.x))) : 0, sy = l.cands ? Math.max(...l.cands.map(c => Math.abs(c[1] - l.y))) : 0; return { x0: l.x - half - sx, x1: l.x + half + sx, y0: l.y - l.size * 2 - sy - 16, y1: l.y + l.size * 2 + sy + 16 }; };
+function takeSnapshot() {
+  shown = { owner: Int16Array.from(owner), towns: new Map(towns.map(t => [t, townSig(t)])), roads: new Map([...roads].map(([k, r]) => [k, roadSig(r)])),
+    battle: new Set(battlefields), ruins: new Set(ruins), labels: new Map(labels.map(l => [l.id, l])) };
+}
+// the parts of the map that differ from the snapshot: { wash, overlay } as lists of rectangles, or null for "everything"
+function changedAreas() {
+  if (!shown || faithMode) return { wash: null, overlay: null };
+  const wash = [], ov = [];
+  for (const h of land) if (owner[h.i] !== shown.owner[h.i]) { wash.push(box(h.x, h.y, 44)); ov.push(box(h.x, h.y, 46)); }
+  const seen = new Set();
+  for (const t of towns) {
+    seen.add(t);
+    if (shown.towns.get(t) !== townSig(t)) ov.push(townArea(t));
+  }
+  for (const [t] of shown.towns) if (!seen.has(t)) ov.push(townArea(t));
+  const rk = new Set();
+  for (const [k, r] of roads) { rk.add(k); if (shown.roads.get(k) !== roadSig(r)) { const a = hexes[r.a], b = hexes[r.b]; ov.push({ x0: Math.min(a.x, b.x) - 12, y0: Math.min(a.y, b.y) - 12, x1: Math.max(a.x, b.x) + 12, y1: Math.max(a.y, b.y) + 12 }); } }
+  for (const [k] of shown.roads) if (!rk.has(k)) { const [a, b] = k.split('-').map(Number); ov.push({ x0: Math.min(hexes[a].x, hexes[b].x) - 12, y0: Math.min(hexes[a].y, hexes[b].y) - 12, x1: Math.max(hexes[a].x, hexes[b].x) + 12, y1: Math.max(hexes[a].y, hexes[b].y) + 12 }); }
+  for (const bf of battlefields) if (!shown.battle.has(bf)) ov.push(box(bf.x, bf.y, 80));
+  for (const bf of shown.battle) if (!battlefields.includes(bf)) ov.push(box(bf.x, bf.y, 80));
+  for (const r of ruins) if (!shown.ruins.has(r)) ov.push(box(r.x, r.y, 70));
+  for (const r of shown.ruins) if (!ruins.includes(r)) ov.push(box(r.x, r.y, 70));
+  // realm names that moved, changed or vanished: repaint where they were and where they are now
+  const now = new Map(labels.map(l => [l.id, l]));
+  for (const [id, l] of now) { const o = shown.labels.get(id); if (!o || labelSig(o) !== labelSig(l)) { ov.push(labelBox(l)); if (o) ov.push(labelBox(o)); } }
+  for (const [id, o] of shown.labels) if (!now.has(id)) ov.push(labelBox(o));
+  const w = mergeRects(wash), o = mergeRects(ov);
+  return { wash: tooBig(w) ? null : w, overlay: tooBig(o) ? null : o };
+}
 function frame(now) {
   const dt = Math.min(now - last, 250); last = now;
   // the founding runs fast, but waits while the welcome panel is open so nobody misses it
@@ -2948,10 +3091,15 @@ function frame(now) {
         .map(l => ({ ...l, ang: l.ang * .35, size: l.size * .8 }));   // long names: keep them level and modest
     } else {
       liveFields = territoryFields(owner); liveBorders = borderLines(owner, liveFields);
-      renderWash(washC, owner, liveFields, id => factions[id].color);
       labels = computeLabels(owner, liveInfo);
+      const ch = changedAreas();
+      renderWash(washC, owner, liveFields, id => factions[id].color, ch.wash);
+      if (ch.overlay && !ovDirty && now - lastFullOv < 8000) ovRects = (ovRects || []).concat(ch.overlay);
+      else ovDirty = true;
+      takeSnapshot();
     }
-    lastWash = now; dirty = false; ovDirty = true;
+    lastWash = now; dirty = false;
+    if (faithMode) ovDirty = true;
   }
   if (needDraw || ovDirty || (!reduceMotion && now - lastDraw > 33) || (ovView && (ovView.scale !== scale || ovView.ox !== ox || ovView.oy !== oy) && now - viewMovedAt > 150)) { draw(); needDraw = false; lastDraw = now; }
   if (now - lastUI > 400) {
