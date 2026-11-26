@@ -1084,6 +1084,7 @@ function wealthYear() {
   // a city's tax grows more slowly than the city itself: crowded streets pay less per head
   for (const t of towns) { if (t.ruined) continue; const o = owner[t.i]; if (o >= 0) townPop.set(o, (townPop.get(o) || 0) + Math.pow(t.pop, .6)); }
   for (const r of roads.values()) { if (!r.used) continue; const o = owner[r.a]; if (o >= 0) roadN.set(o, (roadN.get(o) || 0) + 1); }
+  const armyStr = new Map(); for (const h of hosts) armyStr.set(h.f, (armyStr.get(h.f) || 0) + h.str);
   for (const f of aliveList()) {
     const tw = townPop.get(f.id) || 0;
     let income = tw * 1.2 + (roadN.get(f.id) || 0) * .4 + f.size * .05;
@@ -1092,7 +1093,9 @@ function wealthYear() {
     if (f.plague > 0) income *= .7;
     // an overgrown empire's court and governors eat its revenue
     const share = f.size / landCount; if (share > .25) income *= Math.max(.2, 1 - (share - .25) * 2.5);
-    const upkeep = f.kind === 'horde' ? 0 : Math.pow(f.size, 1.25) * .05 + (f.nWars ? f.size * .04 * Math.min(f.nWars, 3) : 0);
+    // running a realm costs in proportion to its size; war costs what its armies in the field cost
+    const field = armyStr.get(f.id) || 0;
+    const upkeep = f.kind === 'horde' ? 0 : f.size * .06 + field / 1000 * .35;
     f.gold = Math.min(f.size * 6 + 20, f.gold + income - upkeep);
     if (f.nWars) f.peaceSince = year();
     if (f.gold < -(f.size * .8 + 8) && f.bankrupt <= tick) {

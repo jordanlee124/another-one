@@ -24,7 +24,7 @@ Open `index.html` in a browser. There is no build step and nothing to install. T
 - *Dynasties:* every crown belongs to a named house with its own coat of arms. Neighbouring crowns marry. When a royal line dies out, a realm can pass by marriage to another kingdom, joining two crowns under one ruler, or the claim starts a succession war.
 - *Faiths:* faiths spread province by province. Provinces of another faith are restless and rebel along religious lines. Priests preach holy wars, rulers convert to the faith of their people, and a faith that grows too large splits in a Great Schism. The **Faiths** button redraws the map by belief.
 - *Kinds of rule:* kingdoms, merchant republics that elect a Doge every decade or so, and theocracies ruled by a High Priest. Revolutions topple crowns, priests seize power in hard times, and strongmen crown themselves.
-- *Wealth:* towns and roads fill the treasury, and armies empty it. Gold hires mercenaries. Long wars end in bankruptcy and deserting soldiers, and long peace in a golden age that glows around the capital.
+- *Wealth:* towns and roads fill the treasury, and armies empty it. Gold hires mercenaries. A realm pays to run its lands and to keep its armies in the field, so long wars with big armies can end in bankruptcy and deserting soldiers, and long peace in a golden age that glows around the capital.
 
 **Big events stop the clock.** When a great realm falls, a capital is sacked, a horde arrives or a new age begins, time slows to a crawl. The map darkens around the place, ink rings ripple out from it, and a title banner such as "The Fall of Asharene" writes itself across the map. Only one plays at a time, and the most important event wins.
 
