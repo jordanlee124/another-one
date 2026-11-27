@@ -281,7 +281,7 @@ let seed, worldName, gw, gh, F, thr, hexes, land, landCount, rivers, owner, dist
 let innerSea, archetype, features, lanes, seaBoxes = [], COLS, ROWS, X0, Y0, gOff, gHex, gW, liveFields, liveBorders, snapFields, snapBorders;
 let occ = null, hosts = [], warSeq = 0, hostSeq = 0, towns, roads, battlefields, factions, wars, chron, eras, ruins, notes, tick, collapse, lastWarYear;
 let paperC, inkC, washC, washTmp, landBig, snapWashC, labels, snapLabels;
-let labelBoxes = [], dirty = true, ovDirty = true, follow = null, viewEra = null, ovC;
+let labelBoxes = [], dirty = true, ovDirty = true, ovRedo = false, ovBands = null, follow = null, viewEra = null, ovC;
 
 const year = () => Math.floor(tick / 12) + 1;
 
@@ -1516,7 +1516,7 @@ function settlements() {
       if (f.bankrupt > tick) t.pop *= .985;
     }
     t.peak = Math.max(t.peak || 0, t.pop);
-    if (builtCount(t.pop) !== before) ovDirty = true;
+    if (builtCount(t.pop) !== before) townChanged(t);
     const now = kindOf(t);
     if (now !== was && f) {
       dirty = true;
@@ -2160,7 +2160,7 @@ function initWorld(s) {
   faithOf = new Int16Array(hexes.length).fill(-1); faithMode = false; syncFaithButton();
   factions = []; wars = []; chron = []; eras = []; ruins = []; notes = []; tick = 0; collapse = null; lastWarYear = 0;
   catching = null; if (document.getElementById('catchup')) document.getElementById('catchup').hidden = true;
-  townCache.clear(); cachePx = 0; shown = null; ovRects = null; moments = []; momentNow = null; founding = false; follow = null; viewEra = null; labels = []; snapLabels = []; puffs = []; fires = []; battleFx = [];
+  townCache.clear(); cachePx = 0; fieldLayout = null; shown = null; ovRects = null; ovBands = null; moments = []; momentNow = null; founding = false; follow = null; viewEra = null; labels = []; snapLabels = []; puffs = []; fires = []; battleFx = [];
   document.getElementById('chron').innerHTML = '';
   document.getElementById('banner').hidden = true;
   renderLandMask(); renderPaper(); renderInk(); buildGridWeights();
@@ -2434,8 +2434,10 @@ function drawOverlay(x, own, labs, live, fields, borders) {
   if (live) {
     const reach = new Map();
     // every town's houses claim their ground, then fields are laid out largest town first on what is left
-    resetRegister(); for (const t of towns) claimTown(t);
-    for (const t of [...towns].sort((a, b) => b.pop - a.pop)) drawFields(x, t);
+    // (the layout is kept while no town, field or border has changed, so a small repaint doesn't lay out every field again)
+    const order = [...towns].sort((a, b) => b.pop - a.pop), key = fieldLayoutKey(order);
+    if (!fieldLayout || fieldLayout.key !== key) { fieldLayout = { key, of: new Map() }; resetRegister(); for (const t of towns) claimTown(t); }
+    for (const t of order) drawFields(x, t);
     for (const t of towns) { if (t.ruined) drawTown(x, t); else reach.set(t, drawSettlement(x, t)); }
     x.textBaseline = 'middle';
     for (const t of [...towns].filter(t => !t.ruined && t.pop >= TOWN && !factions.some(f => f.alive && f.capital === t.i)).sort((a, b) => b.pop - a.pop)) {
@@ -2672,7 +2674,7 @@ function moment(prio, h, title, sub) {
   if (moments.length > 5) moments.length = 5;
 }
 function updateMoment(now) {
-  if (momentNow && now - momentNow.start > MOMENT_MS) { momentNow = null; momentReady = now + MOMENT_GAP_MS; ovDirty = true; }
+  if (momentNow && now - momentNow.start > MOMENT_MS) { momentNow = null; momentReady = now + MOMENT_GAP_MS; ovRedo = true; }
   if (momentNow || now < momentReady || viewEra || !document.getElementById('away').hidden) return;
   moments = moments.filter(m => tick - m.tick < 36);      // older than three years: the moment has passed
   const m = moments.shift();
@@ -2960,6 +2962,12 @@ function claimTown(t) {
   for (const sl of occupied(pl, builtCount(t.pop))) claimDisc(sl.x, sl.y, 2.2);
   claimDisc(pl.h.x, pl.h.y, 4.5);                                  // the square and the temple
 }
+let fieldLayout = null;
+function fieldLayoutKey(order) {
+  let h = 0; for (let i = 0; i < owner.length; i++) h = (Math.imul(h, 31) + owner[i]) | 0;
+  return h + '#' + order.map(t => [t.i, t.ruined ? 1 : 0, t.pop < .4 ? 0 : builtCount(t.pop), Math.round(clamp(5 + Math.pow(t.pop, .8) * 3.5, 5, 70)),
+    factions[owner[t.i]]?.golden > tick ? 1 : 0].join(',')).join(';');
+}
 // fields: strip fields on the town's own grid, only on free ground in the town's own realm, nearest first
 // ---------- town drawings, drawn once and reused ----------
 // Each town's fields and its buildings are painted once into their own image at the current scale, and reused
@@ -3002,11 +3010,13 @@ function drawFields(x, t) {
   const onScreen = !(pl.h.x + vr < -ox / scale || pl.h.x - vr > (viewW - ox) / scale || pl.h.y + vr < -oy / scale || pl.h.y - vr > (viewH - oy) / scale);
   // outside the part being repainted, a town's fields still claim their ground but are not drawn
   const drawIt = onScreen && inClip(townArea(t));
-  const cells = [];
+  const byTint = tints.map(() => new Path2D()), edges = new Path2D(), furrows = new Path2D();
+  const w = FIELD / 2 - .35;
+  let lay = fieldLayout.of.get(t);
+  if (!lay) {
+  const cells = [], placed = []; let n = 0;
   for (let i = -fr; i <= fr; i++) for (let j = -fr; j <= fr; j++) cells.push({ i, j, d: Math.hypot(i, j) + rr() * .3 });
   cells.sort((p, q) => p.d - q.d);
-  const byTint = tints.map(() => new Path2D()), edges = new Path2D(), furrows = new Path2D(), placed = []; let n = 0;
-  const w = FIELD / 2 - .35;
   for (const cell of cells) {
     if (n >= want) break;
     const cu = cell.i * FIELD, cv = cell.j * FIELD;
@@ -3022,9 +3032,12 @@ function drawFields(x, t) {
   }
   t.fieldsShown = n; t.fieldsWanted = want;
   t.fieldSigNow = placed.map(c => c.i + ',' + c.j).join(';') + (f.golden > tick ? 'g' : '');
-  if (!drawIt || !placed.length) return;
   // the strips' colours, in a fixed order so the same fields always look the same
   const tintOf = placed.map(() => [0, 1, 2].map(() => Math.floor(rr() * tints.length)));
+  fieldLayout.of.set(t, lay = { placed, tintOf });
+  }
+  const { placed, tintOf } = lay;
+  if (!drawIt || !placed.length) return;
   const b = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
   for (const cell of placed) { const [cx, cy] = pl.toW(cell.i * FIELD, cell.j * FIELD); b.x0 = Math.min(b.x0, cx - FIELD); b.y0 = Math.min(b.y0, cy - FIELD); b.x1 = Math.max(b.x1, cx + FIELD); b.y1 = Math.max(b.y1, cy + FIELD); }
   const sig = placed.map(c => c.i + ',' + c.j).join(';') + '|' + (f.golden > tick ? 'g' : '');
@@ -3215,19 +3228,30 @@ function liveInfo(id) {
 // Parchment, watercolour, ink and the overlay of names and towns change only when the world or the view does,
 // so they are composed once into a single screen-sized image and each frame just copies it, then draws what
 // moves (armies, smoke, notes) on top. Only the parts that changed are composed again.
-let stillC = null, stillFull = true, stillRects = null;
+// The parchment, watercolour and ink below the overlay are kept as their own image (the base), so redrawing the
+// names and towns only has to lay the overlay on the base again instead of blending every layer anew.
+let stillC = null, stillFull = true, stillRects = null, baseC = null, baseKey = '', baseRects = null, baseFull = true;
+const clipTo = (g, rects) => {
+  g.beginPath();
+  for (const r of rects) {
+    const x0 = Math.floor((r.x0 * scale + ox) * dpr) - 2, y0 = Math.floor((r.y0 * scale + oy) * dpr) - 2;
+    const x1 = Math.ceil((r.x1 * scale + ox) * dpr) + 2, y1 = Math.ceil((r.y1 * scale + oy) * dpr) + 2;
+    g.rect(x0, y0, x1 - x0, y1 - y0);
+  }
+  g.clip();
+};
 function composeStill(rects) {
   const g = stillC.getContext('2d');
   g.save(); g.setTransform(1, 0, 0, 1, 0, 0);
-  if (rects) {
-    g.beginPath();
-    for (const r of rects) {
-      const x0 = Math.floor((r.x0 * scale + ox) * dpr) - 2, y0 = Math.floor((r.y0 * scale + oy) * dpr) - 2;
-      const x1 = Math.ceil((r.x1 * scale + ox) * dpr) + 2, y1 = Math.ceil((r.y1 * scale + oy) * dpr) + 2;
-      g.rect(x0, y0, x1 - x0, y1 - y0);
-    }
-    g.clip();
-  }
+  if (rects) clipTo(g, rects);
+  g.globalCompositeOperation = 'copy'; g.drawImage(baseC, 0, 0);
+  g.globalCompositeOperation = 'source-over'; g.drawImage(ovC, 0, 0);
+  g.restore();
+}
+function composeBase(rects) {
+  const g = baseC.getContext('2d');
+  g.save(); g.setTransform(1, 0, 0, 1, 0, 0);
+  if (rects) clipTo(g, rects);
   g.fillStyle = '#241a13'; g.fillRect(0, 0, stillC.width, stillC.height);
   g.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * ox, dpr * oy);
   g.fillStyle = 'rgba(0,0,0,.35)'; g.fillRect(3, 6, MW, MH);
@@ -3236,47 +3260,88 @@ function composeStill(rects) {
   g.drawImage(viewEra ? snapWashC : washC, 0, 0, MW, MH);
   g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1;
   g.drawImage(inkC, 0, 0, MW, MH);
-  g.setTransform(1, 0, 0, 1, 0, 0); g.drawImage(ovC, 0, 0);
   g.restore();
 }
-function draw() {
+// the overlay as the current mode shows it
+function paintOverlay(o) {
+  if (viewEra) drawOverlay(o, viewEra.snap.owner, snapLabels, false, snapFields, snapBorders);
+  else if (faithMode) drawOverlay(o, faithView, labels, false, liveFields, liveBorders);
+  else drawOverlay(o, owner, labels, true, liveFields, liveBorders);
+}
+// the visible map cut into horizontal bands, so a full redraw can be spread over a few frames
+// (more of them on big, sharp screens, where each pixel of the map costs more to draw)
+function viewBands() {
+  const n = clamp(Math.ceil(cv.width * cv.height / 350e3), 4, 8);
+  const x0 = -ox / scale - 8, x1 = (viewW - ox) / scale + 8, y0 = -oy / scale - 8, y1 = (viewH - oy) / scale + 8, out = [];
+  // (band edges fall on whole screen pixels, so neighbouring bands meet without a seam)
+  const edge = k => k === 0 ? y0 : k === n ? y1 : (Math.round(cv.height * k / n) / dpr - oy) / scale;
+  for (let k = 0; k < n; k++) out.push({ x0, x1, y0: edge(k), y1: edge(k + 1) });
+  return out;
+}
+// light: a frame that already did the heavy work of redrawing the washes only shows the last picture, and leaves
+// the names and towns for the next frame, so the two costs never land in the same frame
+function draw(light = false) {
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.fillStyle = '#241a13'; ctx.fillRect(0, 0, cv.width, cv.height);
-  if (!stillC || stillC.width !== cv.width || stillC.height !== cv.height) { stillC = mk(cv.width, cv.height); stillFull = true; }
+  if (!stillC || stillC.width !== cv.width || stillC.height !== cv.height) { stillC = mk(cv.width, cv.height); baseC = mk(cv.width, cv.height); stillFull = true; baseFull = true; }
   // while the view is moving, the last image is moved with it; once it settles, it is redrawn sharp
   const stale = !ovView || ovView.scale !== scale || ovView.ox !== ox || ovView.oy !== oy;
   let ovPart = null;
   if (stale && performance.now() - viewMovedAt > 150) ovDirty = true;
-  if (!ovDirty && ovRects && !stale) {
-    // repaint only the changed parts of the overlay; if a name elsewhere had to move, redraw it all next time
-    const o = ovC.getContext('2d'), rs = mergeRects(ovRects), before = labelBoxes.slice();
-    ovRects = null; ovPart = rs;
+  // something that can't be confined to a few areas: redraw everything, a band a frame, unless the view changed
+  // (a map of a past age is a fixed picture: changes to the present wait until it is closed, which redraws everything)
+  if (viewEra) { ovRedo = false; ovRects = null; ovBands = null; }
+  if (ovRedo && !ovDirty) { if (stale) ovDirty = true; else { ovBands = viewBands(); ovRects = null; pruneTownCache(); } }
+  ovRedo = false;
+  if (ovDirty) ovBands = null;
+  if (!light && !ovDirty && !stale && (ovBands || ovRects)) {
+    // repaint only the changed parts of the overlay; if a name elsewhere had to move, redraw it all
+    let merged = ovRects && mergeRects(ovRects);
+    if (!ovBands && merged) {
+      // changes covering most of the view are cheaper to spread over a few frames as a full redraw
+      const vb = viewBands(), V = { x0: vb[0].x0, y0: vb[0].y0, x1: vb.at(-1).x1, y1: vb.at(-1).y1 };
+      const seen = merged.reduce((n, r) => n + Math.max(0, Math.min(r.x1, V.x1) - Math.max(r.x0, V.x0)) * Math.max(0, Math.min(r.y1, V.y1) - Math.max(r.y0, V.y0)), 0);
+      if (seen > (V.x1 - V.x0) * (V.y1 - V.y0) * .35) { ovBands = vb; ovRects = null; }
+    }
+    const band = ovBands ? ovBands.shift() : null;
+    const o = ovC.getContext('2d'), rs = band ? [band] : merged, before = labelBoxes.slice();
+    if (!band) ovRects = null;
+    if (ovBands && !ovBands.length) ovBands = null;
+    ovPart = rs;
     o.save(); o.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * ox, dpr * oy);
     o.beginPath(); for (const r of rs) o.rect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0); o.clip();
     for (const r of rs) o.clearRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
-    ovClip = rs; drawOverlay(o, owner, labels, true, liveFields, liveBorders); ovClip = null;
+    ovClip = rs; paintOverlay(o); ovClip = null;
     o.restore();
-    // a name is safely redrawn only if it lies wholly inside a repainted area; one that moved across an edge needs a full redraw
-    const inside = b => rs.some(r => b.x0 >= r.x0 && b.x1 <= r.x1 && b.y0 >= r.y0 && b.y1 <= r.y1);
-    const key = bs => bs.filter(b => !inside(b)).map(b => [b.x0, b.y0, b.x1, b.y1].map(Math.round).join(',')).sort().join(';');
-    if (key(before) !== key(labelBoxes)) ovDirty = true;
-    // a town outside the repainted areas whose fields shifted (neighbours compete for the same ground) needs a full redraw
-    if (towns.some(t => t.fieldSigNow !== t.fieldSigShown && !inside(townArea(t)))) ovDirty = true;
+    // (a band of a full redraw needs no check: the other bands repaint everything else)
+    if (!band) {
+      // a name is safely redrawn only if it lies wholly inside a repainted area; one that moved across an edge needs a full redraw
+      const inside = b => rs.some(r => b.x0 >= r.x0 && b.x1 <= r.x1 && b.y0 >= r.y0 && b.y1 <= r.y1);
+      const key = bs => bs.filter(b => !inside(b)).map(b => [b.x0, b.y0, b.x1, b.y1].map(Math.round).join(',')).sort().join(';');
+      if (key(before) !== key(labelBoxes)) ovRedo = true;
+      // a town outside the repainted areas whose fields shifted (neighbours compete for the same ground) needs a full redraw
+      if (towns.some(t => t.fieldSigNow !== t.fieldSigShown && !inside(townArea(t)))) ovRedo = true;
+    }
     for (const t of towns) t.fieldSigShown = t.fieldSigNow;
   }
-  if (ovDirty) {
+  if (ovDirty && (!light || !ovView)) {
     ovView = { scale, ox, oy }; ovRects = null; lastFullOv = performance.now(); pruneTownCache();
     const o = ovC.getContext('2d');
     // the overlay is drawn at screen resolution for the current view, so names stay crisp at any zoom
     o.setTransform(1, 0, 0, 1, 0, 0); o.clearRect(0, 0, ovC.width, ovC.height); o.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * ox, dpr * oy);
-    if (viewEra) drawOverlay(o, viewEra.snap.owner, snapLabels, false, snapFields, snapBorders); else if (faithMode) drawOverlay(o, faithView, labels, false, liveFields, liveBorders); else drawOverlay(o, owner, labels, true, liveFields, liveBorders);
+    paintOverlay(o);
     ovDirty = false; stillFull = true;
     for (const t of towns) t.fieldSigShown = t.fieldSigNow;
   }
-  if (!stale) {
+  if (!stale && !light) {
+    // the base is redrawn whole when the view, the world or the era shown changes, otherwise only where the washes did
+    const key = [scale, ox, oy, dpr, cv.width, cv.height].join() + (viewEra ? 'e' + viewEra.start : '');
+    if (key !== baseKey || paperC !== baseC.paper || inkC !== baseC.ink) { baseKey = key; baseC.paper = paperC; baseC.ink = inkC; baseFull = true; }
+    if (baseFull) { composeBase(null); stillFull = true; }
+    else if (stillRects) composeBase(stillRects);
     if (stillFull) composeStill(null);
     else { const rs = (ovPart || []).concat(stillRects || []); if (rs.length) composeStill(rs); }
-    stillFull = false; stillRects = null;
+    stillFull = false; stillRects = null; baseFull = false;
   }
   { const k = scale / ovView.scale;
     ctx.save(); ctx.setTransform(k, 0, 0, k, dpr * (ox - ovView.ox * k), dpr * (oy - ovView.oy * k)); ctx.drawImage(stillC, 0, 0); ctx.restore(); }
@@ -3301,7 +3366,7 @@ const traitWords = t => [
 ].filter(Boolean).join(', ') || 'unremarkable';
 const abilityWord = a => a > .75 ? 'gifted' : a > .45 ? 'capable' : a > .2 ? 'middling' : 'feeble';
 function renderCard() {
-  if (follow !== shownFollow) { shownFollow = follow; ovDirty = true; }   // the followed realm's outline changes only when the choice does
+  if (follow !== shownFollow) { shownFollow = follow; ovRedo = true; }   // the followed realm's outline changes only when the choice does
   const card = document.getElementById('card'), hint = document.getElementById('hint');
   const f = follow != null ? factions[follow] : null;
   if (!f) { card.hidden = true; hint.hidden = false; return; }
@@ -3468,6 +3533,15 @@ document.addEventListener('visibilitychange', () => {
 // only those are repainted; anything that cannot be safely confined falls back to a full redraw.
 let ovClip = null, shown = null, ovRects = null, shownFollow = null, lastFullOv = 0;
 const box = (x, y, r) => ({ x0: x - r, y0: y - r, x1: x + r, y1: y + r });
+// overlay areas are widened to whole border tiles (see borderLines)
+// (and a little past them, so line ends from the next tile that poke across the edge are redrawn too)
+const snapTile = r => ({ x0: Math.floor(r.x0 / BORDER_TILE) * BORDER_TILE - 3, y0: Math.floor(r.y0 / BORDER_TILE) * BORDER_TILE - 3, x1: Math.ceil(r.x1 / BORDER_TILE) * BORDER_TILE + 3, y1: Math.ceil(r.y1 / BORDER_TILE) * BORDER_TILE + 3 });
+// a town that gained or lost a house: repaint just that town, unless the map is being shown some other way
+function townChanged(t) {
+  if (ovDirty || ovRedo) return;
+  if (viewEra || faithMode || !ovView || (ovRects && ovRects.length > 120)) { ovRedo = true; return; }
+  ovRects = (ovRects || []).concat([snapTile(townArea(t))]);
+}
 // a town, its fields and the name written beside it
 const townArea = t => { const r = Math.max(t.fieldR || 0, townRadius(Math.max(t.pop, t.peak || 0))) + 14, h = hexes[t.i], nameW = townFont(t) * t.name.length * .65 + 10; return { x0: h.x - r - nameW, y0: h.y - r, x1: h.x + r + nameW, y1: h.y + r }; };
 function mergeRects(rs) {
@@ -3531,10 +3605,7 @@ function changedAreas() {
   const now = new Map(labels.map(l => [l.id, l]));
   for (const [id, l] of now) { const o = shown.labels.get(id); if (!o || labelSig(o) !== labelSig(l)) { ov.push(labelBox(l)); if (o) ov.push(labelBox(o)); } }
   for (const [id, o] of shown.labels) if (!now.has(id)) ov.push(labelBox(o));
-  // overlay areas are widened to whole border tiles (see borderLines)
-  // (and a little past them, so line ends from the next tile that poke across the edge are redrawn too)
-  const snap = r => ({ x0: Math.floor(r.x0 / BORDER_TILE) * BORDER_TILE - 3, y0: Math.floor(r.y0 / BORDER_TILE) * BORDER_TILE - 3, x1: Math.ceil(r.x1 / BORDER_TILE) * BORDER_TILE + 3, y1: Math.ceil(r.y1 / BORDER_TILE) * BORDER_TILE + 3 });
-  const w = mergeRects(wash), o = mergeRects(ov.map(snap));
+  const w = mergeRects(wash), o = mergeRects(ov.map(snapTile));
   return { wash: tooBig(w) ? null : w, overlay: tooBig(o) ? null : o };
 }
 function frame(now) {
@@ -3550,12 +3621,13 @@ function frame(now) {
     if (n) needDraw = true;
     if (founding && year() > PRESIM_YEARS) endFounding();
   }
+  let washed = false;
   if (dirty && now - lastWash > (catching ? 1500 : 350)) {
     if (faithMode) {
       // the faith map: the same washes and borders, drawn by belief instead of by crown
       const fo = Int16Array.from(faithOf); for (const h of hexes) if (!h.land) fo[h.i] = -1;
       faithView = fo; liveFields = territoryFields(fo); liveBorders = borderLines(fo, liveFields);
-      renderWash(washC, fo, liveFields, id => faiths[id].color); stillFull = true;
+      renderWash(washC, fo, liveFields, id => faiths[id].color); baseFull = true;
       labels = computeLabels(fo, id => faiths[id] && { id: -1 - id, name: faiths[id].name.replace(/^the /, ''), color: faiths[id].color, capital: -1, sub: '' })
         .map(l => ({ ...l, ang: l.ang * .35, size: l.size * .8 }));   // long names: keep them level and modest
     } else {
@@ -3563,15 +3635,15 @@ function frame(now) {
       labels = computeLabels(owner, liveInfo);
       const ch = changedAreas();
       renderWash(washC, owner, liveFields, id => realmColor(factions[id]), ch.wash);
-      if (ch.wash) stillRects = (stillRects || []).concat(ch.wash); else stillFull = true;
-      if (ch.overlay && !ovDirty && now - lastFullOv < 8000) ovRects = (ovRects || []).concat(ch.overlay);
-      else ovDirty = true;
+      if (ch.wash) stillRects = (stillRects || []).concat(ch.wash); else baseFull = true;
+      if (ch.overlay) ovRects = (ovRects || []).concat(ch.overlay);   // no periodic full redraw: partial ones are exact
+      else ovRedo = true;
       takeSnapshot();
     }
-    lastWash = now; dirty = false;
-    if (faithMode) ovDirty = true;
+    lastWash = now; dirty = false; washed = true;
+    if (faithMode) ovRedo = true;
   }
-  if (needDraw || ovDirty || (!reduceMotion && now - lastDraw > 33) || (ovView && (ovView.scale !== scale || ovView.ox !== ox || ovView.oy !== oy) && now - viewMovedAt > 150)) { draw(); needDraw = false; lastDraw = now; }
+  if (needDraw || ovDirty || ovRedo || ovBands || (!washed && (ovRects || stillRects || stillFull || baseFull)) || (!reduceMotion && now - lastDraw > 33) || (ovView && (ovView.scale !== scale || ovView.ox !== ox || ovView.oy !== oy) && now - viewMovedAt > 150)) { draw(washed); needDraw = false; lastDraw = now; }
   if (now - lastUI > 400) {
     lastUI = now;
     document.getElementById('yr').textContent = `Year ${year()}`;
