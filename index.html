@@ -3211,23 +3211,46 @@ function liveInfo(id) {
   const f = factions[id]; if (!f || !f.alive) return null;
   return { id, name: f.name, color: realmColor(f), capital: f.capital, sub: f.kind === 'horde' ? 'the Horde' : isVassal(f) ? `vassal of ${factions[f.overlord].name}` : styleOf(f) };
 }
+// ---------- the still map ----------
+// Parchment, watercolour, ink and the overlay of names and towns change only when the world or the view does,
+// so they are composed once into a single screen-sized image and each frame just copies it, then draws what
+// moves (armies, smoke, notes) on top. Only the parts that changed are composed again.
+let stillC = null, stillFull = true, stillRects = null;
+function composeStill(rects) {
+  const g = stillC.getContext('2d');
+  g.save(); g.setTransform(1, 0, 0, 1, 0, 0);
+  if (rects) {
+    g.beginPath();
+    for (const r of rects) {
+      const x0 = Math.floor((r.x0 * scale + ox) * dpr) - 2, y0 = Math.floor((r.y0 * scale + oy) * dpr) - 2;
+      const x1 = Math.ceil((r.x1 * scale + ox) * dpr) + 2, y1 = Math.ceil((r.y1 * scale + oy) * dpr) + 2;
+      g.rect(x0, y0, x1 - x0, y1 - y0);
+    }
+    g.clip();
+  }
+  g.fillStyle = '#241a13'; g.fillRect(0, 0, stillC.width, stillC.height);
+  g.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * ox, dpr * oy);
+  g.fillStyle = 'rgba(0,0,0,.35)'; g.fillRect(3, 6, MW, MH);
+  g.drawImage(paperC, 0, 0, MW, MH);
+  g.globalCompositeOperation = 'multiply'; g.globalAlpha = .62;
+  g.drawImage(viewEra ? snapWashC : washC, 0, 0, MW, MH);
+  g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1;
+  g.drawImage(inkC, 0, 0, MW, MH);
+  g.setTransform(1, 0, 0, 1, 0, 0); g.drawImage(ovC, 0, 0);
+  g.restore();
+}
 function draw() {
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.fillStyle = '#241a13'; ctx.fillRect(0, 0, cv.width, cv.height);
-  ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * ox, dpr * oy);
-  ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.fillRect(3, 6, MW, MH);
-  ctx.drawImage(paperC, 0, 0, MW, MH);
-  ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.globalAlpha = .62;
-  ctx.drawImage(viewEra ? snapWashC : washC, 0, 0, MW, MH); ctx.restore();
-  ctx.drawImage(inkC, 0, 0, MW, MH);
-  if (!viewEra) drawLiveMarks(ctx);
-  // while the view is moving, the last overlay is moved with it; once it settles, it is redrawn sharp
+  if (!stillC || stillC.width !== cv.width || stillC.height !== cv.height) { stillC = mk(cv.width, cv.height); stillFull = true; }
+  // while the view is moving, the last image is moved with it; once it settles, it is redrawn sharp
   const stale = !ovView || ovView.scale !== scale || ovView.ox !== ox || ovView.oy !== oy;
+  let ovPart = null;
   if (stale && performance.now() - viewMovedAt > 150) ovDirty = true;
   if (!ovDirty && ovRects && !stale) {
     // repaint only the changed parts of the overlay; if a name elsewhere had to move, redraw it all next time
     const o = ovC.getContext('2d'), rs = mergeRects(ovRects), before = labelBoxes.slice();
-    ovRects = null;
+    ovRects = null; ovPart = rs;
     o.save(); o.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * ox, dpr * oy);
     o.beginPath(); for (const r of rs) o.rect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0); o.clip();
     for (const r of rs) o.clearRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
@@ -3247,12 +3270,18 @@ function draw() {
     // the overlay is drawn at screen resolution for the current view, so names stay crisp at any zoom
     o.setTransform(1, 0, 0, 1, 0, 0); o.clearRect(0, 0, ovC.width, ovC.height); o.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * ox, dpr * oy);
     if (viewEra) drawOverlay(o, viewEra.snap.owner, snapLabels, false, snapFields, snapBorders); else if (faithMode) drawOverlay(o, faithView, labels, false, liveFields, liveBorders); else drawOverlay(o, owner, labels, true, liveFields, liveBorders);
-    ovDirty = false;
+    ovDirty = false; stillFull = true;
     for (const t of towns) t.fieldSigShown = t.fieldSigNow;
   }
+  if (!stale) {
+    if (stillFull) composeStill(null);
+    else { const rs = (ovPart || []).concat(stillRects || []); if (rs.length) composeStill(rs); }
+    stillFull = false; stillRects = null;
+  }
   { const k = scale / ovView.scale;
-    ctx.save(); ctx.setTransform(k, 0, 0, k, dpr * (ox - ovView.ox * k), dpr * (oy - ovView.oy * k)); ctx.drawImage(ovC, 0, 0); ctx.restore(); }
-  if (!viewEra) { const now = performance.now(); drawAnim(ctx, now); drawNotes(ctx); drawMoment(ctx, now); }
+    ctx.save(); ctx.setTransform(k, 0, 0, k, dpr * (ox - ovView.ox * k), dpr * (oy - ovView.oy * k)); ctx.drawImage(stillC, 0, 0); ctx.restore(); }
+  ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * ox, dpr * oy);
+  if (!viewEra) { drawLiveMarks(ctx); const now = performance.now(); drawAnim(ctx, now); drawNotes(ctx); drawMoment(ctx, now); }
 }
 
 // ---------- side panel ----------
@@ -3526,7 +3555,7 @@ function frame(now) {
       // the faith map: the same washes and borders, drawn by belief instead of by crown
       const fo = Int16Array.from(faithOf); for (const h of hexes) if (!h.land) fo[h.i] = -1;
       faithView = fo; liveFields = territoryFields(fo); liveBorders = borderLines(fo, liveFields);
-      renderWash(washC, fo, liveFields, id => faiths[id].color);
+      renderWash(washC, fo, liveFields, id => faiths[id].color); stillFull = true;
       labels = computeLabels(fo, id => faiths[id] && { id: -1 - id, name: faiths[id].name.replace(/^the /, ''), color: faiths[id].color, capital: -1, sub: '' })
         .map(l => ({ ...l, ang: l.ang * .35, size: l.size * .8 }));   // long names: keep them level and modest
     } else {
@@ -3534,6 +3563,7 @@ function frame(now) {
       labels = computeLabels(owner, liveInfo);
       const ch = changedAreas();
       renderWash(washC, owner, liveFields, id => realmColor(factions[id]), ch.wash);
+      if (ch.wash) stillRects = (stillRects || []).concat(ch.wash); else stillFull = true;
       if (ch.overlay && !ovDirty && now - lastFullOv < 8000) ovRects = (ovRects || []).concat(ch.overlay);
       else ovDirty = true;
       takeSnapshot();
