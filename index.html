@@ -3321,7 +3321,7 @@ function renderTimeline() {
   });
 }
 function showEra(e) {
-  if (e && faithMode) { faithMode = false; syncFaithButton(); dirty = true; lastWash = -1e9; }
+  if (e && faithMode) { faithMode = false; syncFaithButton(); shown = null; ovRects = null; dirty = true; lastWash = -1e9; }
   viewEra = e; ovDirty = true;
   const b = document.getElementById('banner');
   if (e) {
@@ -3336,7 +3336,8 @@ document.getElementById('banner').onclick = () => showEra(null);
 document.getElementById('foundskip').onclick = () => endFounding();
 let faithView = null;
 function syncFaithButton() { const b = document.getElementById('faithmode'); b.textContent = faithMode ? 'Realms' : 'Faiths'; b.setAttribute('aria-pressed', String(faithMode)); }
-document.getElementById('faithmode').onclick = () => { if (viewEra) showEra(null); faithMode = !faithMode; syncFaithButton(); dirty = true; lastWash = -1e9; };
+// switching map views repaints everything: the record of what the map shows belongs to the realm view
+document.getElementById('faithmode').onclick = () => { if (viewEra) showEra(null); faithMode = !faithMode; syncFaithButton(); shown = null; ovRects = null; ovDirty = true; dirty = true; lastWash = -1e9; };
 document.getElementById('away').addEventListener('click', ev => { const a = ev.target.closest('a.fn'); if (a) { follow = +a.dataset.f; renderCard(); } });
 chronEl.addEventListener('click', ev => { const a = ev.target.closest('a.fn'); if (a) { follow = +a.dataset.f; renderCard(); } });
 document.getElementById('card').addEventListener('click', ev => { const a = ev.target.closest('a.fn'); if (a) { follow = +a.dataset.f; renderCard(); } });
